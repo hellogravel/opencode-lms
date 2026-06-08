@@ -216,7 +216,7 @@ npm run test        # Watch mode
 ### Live integration probe
 
 `test-live.mjs` exercises the full plugin path against a running LM Studio
-instance — discovery, migration, streaming auto-load, idempotency, cleanup.
+instance — discovery, streaming auto-load, idempotency, cleanup.
 Configuration is via env vars:
 
 ```bash
@@ -237,6 +237,30 @@ hit, no host config pollution — see [`docker/`](./docker/). One
 this plugin loaded, talking to LM Studio on the Docker host (or anywhere
 else via `LMS_BASE_URL`). The harness pre-stages the plugin into
 OpenCode's cache so first-boot is fast and works offline.
+
+### Releasing
+
+Releases publish automatically via [`.github/workflows/release.yml`](./.github/workflows/release.yml)
+when a `v*` tag is pushed. The workflow verifies that the tag matches
+`package.json`'s `version`, runs typecheck + tests + build, then
+`npm publish --provenance --access public`.
+
+To cut a release:
+
+```bash
+# bump package.json version (npm version also tags + commits)
+npm version patch        # 0.1.1 → 0.1.2
+git push origin main --follow-tags
+```
+
+The workflow requires one repo secret: `NPM_TOKEN` — an npm
+[automation token](https://docs.npmjs.com/creating-and-viewing-access-tokens#creating-granular-access-tokens-on-the-website)
+scoped to publish `@hellogravel/opencode-lms`.
+
+For future hardening, npm's [Trusted Publishing](https://docs.npmjs.com/trusted-publishers)
+lets you drop the long-lived token entirely — the workflow uses OIDC to
+authenticate to npm directly. Configure on npmjs.com under the
+package's "Settings → Trusted Publisher" once you want it.
 
 ## What's not yet delivered
 
