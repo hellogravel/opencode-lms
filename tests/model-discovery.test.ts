@@ -35,7 +35,7 @@ describe("discoverAndMapModels", () => {
       reasoning: false,
       tool_call: false,
       modalities: { input: ["text"], output: ["text"] },
-      limit: { context: 8192 },
+      limit: { context: 8192, output: 8192 },
       isLoaded: false,
       quantization: "Q4_K_M",
       format: "gguf",

@@ -35,7 +35,11 @@ function mapSingleModel(model: LMSModelInfo): MappedModelConfig {
     reasoning: model.capabilities?.reasoning ? true : false,
     tool_call: model.capabilities?.trained_for_tool_use ? true : false,
     modalities,
-    limit: { context: model.max_context_length },
+    // OpenCode's ProviderConfig schema requires both context and output when
+    // `limit` is present. LMS doesn't expose a separate output cap (output
+    // is bounded by remaining context), so default output to the full
+    // context window.
+    limit: { context: model.max_context_length, output: model.max_context_length },
     variants,
     isLoaded,
     loadedInstance: loadedInstance

@@ -31,17 +31,23 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
 
   function readUserConfig(raw: Record<string, unknown> | undefined): LMSProviderConfig | null {
     if (!raw) return null;
+    // OpenCode's ProviderConfig schema only carries `options` as an open
+    // bucket — top-level fields it doesn't recognize (baseURL, apiKey,
+    // autoDownload, etc.) get stripped on load. Read from `options` first;
+    // fall back to top-level for tolerance of hand-written configs.
     const options = (raw.options as Record<string, unknown> | undefined) ?? {};
+    const pick = <T>(key: string): T | undefined =>
+      (options[key] as T | undefined) ?? (raw[key] as T | undefined);
     return {
-      name: (raw.name as string | undefined) ?? undefined,
-      baseURL: normalizeBaseURL((raw.baseURL as string | undefined) ?? (options.baseURL as string | undefined)),
-      apiKey: (raw.apiKey as string | undefined) ?? (options.apiKey as string | undefined),
-      autoDetect: raw.autoDetect as boolean | undefined,
-      disableAutoLoad: raw.disableAutoLoad as boolean | undefined,
-      autoDownload: raw.autoDownload as boolean | undefined,
-      loadTimeout: raw.loadTimeout as number | undefined,
-      downloadTimeout: raw.downloadTimeout as number | undefined,
-      models: raw.models as LMSProviderConfig["models"],
+      name: pick<string>("name") ?? (raw.name as string | undefined),
+      baseURL: normalizeBaseURL(pick<string>("baseURL")),
+      apiKey: pick<string>("apiKey"),
+      autoDetect: pick<boolean>("autoDetect"),
+      disableAutoLoad: pick<boolean>("disableAutoLoad"),
+      autoDownload: pick<boolean>("autoDownload"),
+      loadTimeout: pick<number>("loadTimeout"),
+      downloadTimeout: pick<number>("downloadTimeout"),
+      models: (raw.models as LMSProviderConfig["models"]) ?? (options.models as LMSProviderConfig["models"]),
     };
   }
 

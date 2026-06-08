@@ -155,7 +155,7 @@ describe("buildProviderConfig", () => {
       name: "M1",
       reasoning: false,
       tool_call: false,
-      limit: { context: 4096 },
+      limit: { context: 4096, output: 4096 },
     });
   });
 });

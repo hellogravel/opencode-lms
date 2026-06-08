@@ -65,65 +65,44 @@ export class LMSClient {
 
   async checkHealth(): Promise<HealthCheckResult> {
     const start = Date.now();
-    // Try v1 first
-    try {
-      const url = buildURL(this.baseURL, "/api/v1/models");
-      const response = await fetch(url, {
-        method: "GET",
-        headers: this.headers,
-        signal: AbortSignal.timeout(3000),
-      });
-      if (response.ok) {
-        return {
-          healthy: true,
-          baseURL: this.baseURL,
-          apiVersion: "v1",
-          latency: Date.now() - start,
-        };
+    const attempts: Array<{ path: string; version: HealthCheckResult["apiVersion"] }> = [
+      { path: "/api/v1/models", version: "v1" },
+      { path: "/api/v0/models", version: "v0" },
+      { path: "/v1/models", version: "openai" },
+    ];
+    const failures: string[] = [];
+
+    for (const { path, version } of attempts) {
+      const url = buildURL(this.baseURL, path);
+      try {
+        const response = await fetch(url, {
+          method: "GET",
+          headers: this.headers,
+          signal: AbortSignal.timeout(5000),
+        });
+        if (response.ok) {
+          return {
+            healthy: true,
+            baseURL: this.baseURL,
+            apiVersion: version,
+            latency: Date.now() - start,
+          };
+        }
+        // Pull a short body excerpt for diagnostic context — most LMS error
+        // bodies are tiny JSON ({"error":{"message":"..."}}).
+        const body = (await response.text().catch(() => "")).slice(0, 200);
+        failures.push(`${url} → HTTP ${response.status}${body ? `: ${body}` : ""}`);
+      } catch (err) {
+        const e = err as Error;
+        const detail = e.name === "TimeoutError"
+          ? "timeout after 5s"
+          : `${e.name}: ${e.message}`;
+        failures.push(`${url} → ${detail}`);
       }
-    } catch {
-      // Fall through to v0
     }
 
-    // Try v0
-    try {
-      const url = buildURL(this.baseURL, "/api/v0/models");
-      const response = await fetch(url, {
-        method: "GET",
-        headers: this.headers,
-        signal: AbortSignal.timeout(3000),
-      });
-      if (response.ok) {
-        return {
-          healthy: true,
-          baseURL: this.baseURL,
-          apiVersion: "v0",
-          latency: Date.now() - start,
-        };
-      }
-    } catch {
-      // Fall through to OpenAI compat
-    }
-
-    // Try OpenAI-compatible /v1/models
-    try {
-      const url = buildURL(this.baseURL, "/v1/models");
-      const response = await fetch(url, {
-        method: "GET",
-        headers: this.headers,
-        signal: AbortSignal.timeout(3000),
-      });
-      if (response.ok) {
-        return {
-          healthy: true,
-          baseURL: this.baseURL,
-          apiVersion: "openai",
-          latency: Date.now() - start,
-        };
-      }
-    } catch {
-      // Fall through
-    }
+    console.warn(`[opencode-lms] health check failed at ${this.baseURL}:`);
+    for (const f of failures) console.warn(`[opencode-lms]   ${f}`);
 
     return {
       healthy: false,
