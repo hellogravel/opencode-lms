@@ -10,6 +10,7 @@ docker/
 
 tests/
 test-live.mjs
+probe-streaming.mjs
 
 .git/
 .DS_Store

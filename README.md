@@ -262,13 +262,22 @@ lets you drop the long-lived token entirely — the workflow uses OIDC to
 authenticate to npm directly. Configure on npmjs.com under the
 package's "Settings → Trusted Publisher" once you want it.
 
-## What's not yet delivered
+## Notes on reasoning effort
 
-- **Reasoning content / tool-call streaming surfaced to the TUI.** Inference
-  flows through `@ai-sdk/openai-compatible` to `/v1/chat/completions`. The
-  plugin's SSE parser handles those event types — we just don't intercept the
-  AI SDK's response stream to surface them. A custom transport would be
-  needed.
+OpenCode's UI exposes the standard OpenAI reasoning-effort scale
+(`minimal | low | medium | high | xhigh | max`) for any model marked
+`reasoning: true`. LM Studio's `/v1/chat/completions` endpoint accepts
+that same scale directly and handles the mapping to each model's actual
+internal capabilities itself — some models reason at multiple discrete
+levels, others have a simpler on/off toggle. Either way, picking a
+level produces correct behavior on the wire; the per-model mapping is
+LMS's call and doesn't need plugin intervention.
+
+Reasoning content streams through `delta.reasoning_content` chunks on
+the OpenAI-compatible endpoint (verified against a live LMS server with
+`probe-streaming.mjs`). Whether your OpenCode TUI surfaces those chunks
+live versus showing only the final answer depends on OpenCode's
+renderer, not this plugin.
 
 ## License
 
