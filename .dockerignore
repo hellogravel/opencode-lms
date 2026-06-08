@@ -1,0 +1,16 @@
+# Used when docker/ pulls the package root as an additional_context.
+# Keeps the build context small and avoids host/container mismatches.
+
+node_modules/
+dist/
+*.tsbuildinfo
+
+# The harness itself doesn't need to recurse into its own build context.
+docker/
+
+tests/
+test-live.mjs
+
+.git/
+.DS_Store
+*.log

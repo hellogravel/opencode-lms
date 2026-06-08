@@ -1,0 +1,31 @@
+name: opencode-lms
+
+services:
+  opencode:
+    build:
+      context: .
+      # The plugin source is the parent directory (this harness lives at
+      # opencode-lms/docker/). A relative path keeps the harness
+      # self-contained and portable across clones.
+      additional_contexts:
+        opencode-lms: ..
+    user: "1000:1000"
+    volumes:
+      - opencode-config:/home/coder/.config/opencode
+      - opencode-data:/home/coder/.local/share/opencode
+      - ${HOME}/sandbox:/workspace:cached
+    environment:
+      - OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD:?set OPENCODE_SERVER_PASSWORD in .env or your shell}
+      - LM_STUDIO_API_KEY=${LM_STUDIO_API_KEY:-}
+      - LMS_BASE_URL=${LMS_BASE_URL:-http://host.docker.internal:1234}
+      - LMS_MODEL=${LMS_MODEL:-lms/google/gemma-4-e4b}
+      - LMS_AUTO_DOWNLOAD=${LMS_AUTO_DOWNLOAD:-false}
+      - LMS_DISABLE_AUTO_LOAD=${LMS_DISABLE_AUTO_LOAD:-false}
+    ports:
+      - "4096:4096"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  opencode-config:
+  opencode-data:

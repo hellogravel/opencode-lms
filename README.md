@@ -213,14 +213,26 @@ npm run test        # Watch mode
 
 `test-live.mjs` exercises the full plugin path against a running LM Studio
 instance — discovery, migration, streaming auto-load, idempotency, cleanup.
-Edit the constants at the top to point at your server, then:
+Configuration is via env vars:
 
 ```bash
-npm run build && node test-live.mjs
+npm run build
+LMS_BASE_URL=http://192.168.1.10:1234 \
+LMS_API_KEY=sk-lm-... \
+  node test-live.mjs
 ```
 
 The script unloads anything it loaded before exiting, so it's safe to run
 against a working server.
+
+### Live in a real OpenCode runtime (`docker/`)
+
+For a full end-to-end run through actual OpenCode — same code path users
+hit, no host config pollution — see [`docker/`](./docker/). One
+`docker compose up --build` and you have a running OpenCode server with
+this plugin loaded, talking to LM Studio on the Docker host (or anywhere
+else via `LMS_BASE_URL`). The harness pre-stages the plugin into
+OpenCode's cache so first-boot is fast and works offline.
 
 ## What's not yet delivered
 
