@@ -49,6 +49,43 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
     };
   }
 
+  /**
+   * LM Studio's `/v1/chat/completions` accepts `reasoning_effort` values from
+   * `none | minimal | low | medium | high | xhigh` and rejects anything else
+   * with HTTP 400. OpenCode's picker may emit `"max"` (used by certain
+   * OpenAI models like `5.1-codex-max`), which isn't in LMS's accepted set.
+   * Demote it to the closest accepted value before the AI SDK serializes
+   * the request. We probe a few conventional locations because the AI SDK
+   * may put reasoningEffort top-level or under providerOptions.
+   */
+  function demoteUnsupportedReasoningEffort(
+    output: { options: Record<string, unknown> } | undefined,
+  ): void {
+    if (!output?.options) return;
+    const opts = output.options as Record<string, unknown>;
+    const providerOpts = (opts.providerOptions as Record<string, Record<string, unknown>> | undefined) ?? {};
+    const oaiCompat = providerOpts.openaiCompatible;
+    const oai = providerOpts.openai;
+
+    let demoted = false;
+    const demote = (target: Record<string, unknown> | undefined) => {
+      if (target && target.reasoningEffort === "max") {
+        target.reasoningEffort = "xhigh";
+        demoted = true;
+      }
+    };
+    demote(opts);
+    demote(oaiCompat);
+    demote(oai);
+
+    if (demoted) {
+      console.log(
+        `[opencode-lms] Reasoning effort "max" demoted to "xhigh" ` +
+          `(LM Studio's /v1/chat/completions accepts: none, minimal, low, medium, high, xhigh)`,
+      );
+    }
+  }
+
   async function ensureLoadedWithLogging(modelId: string, model: LMSModelInfo): Promise<void> {
     if (!lifecycle || !resolvedBaseURL) return;
     console.log(`[opencode-lms] Auto-loading model ${modelId}`);
@@ -106,9 +143,14 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
       }
     },
 
-    "chat.params": async (input, _output) => {
+    "chat.params": async (input, output) => {
       const providerID = input?.provider?.info?.id;
       if (providerID !== PROVIDER_ID) return;
+
+      // Always run the reasoning-effort demotion — it's independent of
+      // whether discovery is healthy and shouldn't be gated by it.
+      demoteUnsupportedReasoningEffort(output);
+
       if (!lifecycle || !resolvedBaseURL) return;
 
       const modelId = input?.model?.id;
