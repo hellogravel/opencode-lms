@@ -10,7 +10,7 @@ const PROVIDER_ID = "lms";
 
 /**
  * Resolve the effective config for the LM Studio provider.
- * Handles auto-detection, migration from old lmstudio config, and defaults.
+ * Handles auto-detection and defaults.
  */
 export async function resolveProviderConfig(
   userConfig: LMSProviderConfig | null | undefined,

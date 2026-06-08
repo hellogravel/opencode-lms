@@ -3,7 +3,6 @@ import type { LMSModelInfo, LMSProviderConfig } from "./types.js";
 import { buildProviderConfig } from "./provider.js";
 import { LMSClient } from "./api-client.js";
 import { ModelLifecycle } from "./model-lifecycle.js";
-import { migrateLmstudioToLms } from "./migrate.js";
 import {
   isModelLoadStart,
   isModelLoadProgress,
@@ -12,7 +11,6 @@ import {
 } from "./streaming.js";
 
 const PROVIDER_ID = "lms";
-const LEGACY_PROVIDER_ID = "lmstudio";
 
 export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => {
   console.log("[opencode-lms] LM Studio plugin initialized");
@@ -75,16 +73,9 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
   return {
     config: async (config) => {
       const providers = (config as { provider?: Record<string, Record<string, unknown>> }).provider ?? {};
-      let userConfig: LMSProviderConfig | null = null;
-      let migrated = false;
-
-      if (providers[PROVIDER_ID]) {
-        userConfig = readUserConfig(providers[PROVIDER_ID]);
-      } else if (providers[LEGACY_PROVIDER_ID]) {
-        console.log("[opencode-lms] Migrating lmstudio → lms");
-        userConfig = migrateLmstudioToLms(providers[LEGACY_PROVIDER_ID]);
-        migrated = true;
-      }
+      const userConfig: LMSProviderConfig | null = providers[PROVIDER_ID]
+        ? readUserConfig(providers[PROVIDER_ID])
+        : null;
 
       const result = await buildProviderConfig(userConfig);
       if (!result) return;
@@ -92,22 +83,6 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
       const cfg = config as { provider?: Record<string, unknown> };
       if (!cfg.provider) cfg.provider = {};
       cfg.provider[PROVIDER_ID] = result.providerConfig;
-
-      if (migrated) {
-        delete (cfg.provider as Record<string, unknown>)[LEGACY_PROVIDER_ID];
-
-        // Also disable OpenCode's built-in `lmstudio` provider so it doesn't
-        // re-register itself on the next boot and shadow our `lms` provider.
-        // Push into the existing array if there is one; otherwise create it.
-        const root = config as { disabled_providers?: string[] };
-        if (!Array.isArray(root.disabled_providers)) {
-          root.disabled_providers = [];
-        }
-        if (!root.disabled_providers.includes(LEGACY_PROVIDER_ID)) {
-          root.disabled_providers.push(LEGACY_PROVIDER_ID);
-          console.log("[opencode-lms] Added 'lmstudio' to disabled_providers");
-        }
-      }
 
       if (result.health?.healthy && result.health.baseURL) {
         resolvedBaseURL = result.health.baseURL;

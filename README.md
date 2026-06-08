@@ -1,16 +1,14 @@
 # @hellogravel/opencode-lms
 
-An [LM Studio](https://lmstudio.ai) provider plugin for [OpenCode](https://opencode.ai) — dynamic model discovery, streaming auto-load, and full integration with LM Studio's REST API.
+An [LM Studio](https://lmstudio.ai) provider plugin for [OpenCode](https://opencode.ai).
 
-## Features
+## What it does
 
-- **Dynamic model discovery** — Automatically discovers all models on disk via LM Studio's REST v1 API, with fallback to v0 and OpenAI-compatible `/v1/models` for older servers
-- **Zero config** — Auto-detects LM Studio on common ports (1234, 8080, 11434)
-- **Streaming auto-load** — On first use, unloaded LLMs are loaded through LM Studio's `/api/v1/chat` SSE endpoint; `model_load.start/progress/end` events surface in the OpenCode server log. The stream aborts the moment the load completes so no inference tokens are wasted
-- **Embedding-aware** — Embedding models bypass the chat endpoint (which is LLM-only) and use `/api/v1/models/load` directly
-- **Auto-migration** — Existing `lmstudio` provider configs (with `options.baseURL` / `options.apiKey` nesting) are seamlessly migrated to `lms` on startup
-- **Multi-API support** — Uses both OpenAI-compatible endpoints for inference and LM Studio REST v1 for lifecycle
-- **API token auth** — Supports LM Studio's `Authorization: Bearer …` setup; health checks and discovery respect it
+- Lists the LM Studio server's models in OpenCode (via REST `/api/v1/models`, with `/api/v0/models` and the OpenAI-compatible `/v1/models` as fallbacks for older servers).
+- Probes localhost ports `1234`, `8080`, `11434` when no `baseURL` is configured.
+- Triggers a load on first reference to an unloaded LLM via `/api/v1/chat` (streaming) and logs `model_load.start/progress/end` to the OpenCode server log. The stream aborts as soon as the load completes, so no inference tokens are spent.
+- Routes embedding-model loads through `/api/v1/models/load` directly, since `/api/v1/chat` is LLM-only.
+- Forwards an `Authorization: Bearer …` header to LM Studio when an `apiKey` is configured.
 
 ## Quick Start
 
@@ -134,44 +132,32 @@ That's it. The plugin will auto-discover all available models.
 }
 ```
 
-## Migration from `lmstudio`
+## Coming from the built-in `lmstudio` provider
 
-If you have an existing `lmstudio` provider in your config:
-
-```jsonc
-{
-  "provider": {
-    "lmstudio": {
-      "name": "LM Studio (Custom)",
-      "options": {
-        "baseURL": "http://192.168.12.166:1234/v1",
-        "apiKey": "your-key"
-      },
-      "models": { ... }
-    }
-  }
-}
-```
-
-The plugin will pick it up on startup and present it as `lms`. The config below is the equivalent native form:
+If you've been using OpenCode's built-in `lmstudio` provider, switching
+to this plugin is an explicit edit to your `opencode.jsonc`. Replace
+the `lmstudio` provider entry with `lms`, list this plugin under
+`plugin`, and disable the built-in so it doesn't register a competing
+entry:
 
 ```jsonc
 {
+  "disabled_providers": ["lmstudio"],
   "provider": {
     "lms": {
-      "name": "LM Studio (Custom)",
+      "name": "LM Studio",
       "options": {
         "baseURL": "http://192.168.12.166:1234",
         "apiKey": "your-key"
       }
     }
-  }
+  },
+  "plugin": ["@hellogravel/opencode-lms"]
 }
 ```
 
-During migration the plugin also adds `"lmstudio"` to `disabled_providers`,
-so OpenCode's built-in `lmstudio` provider doesn't re-register on subsequent
-starts and shadow the `lms` provider this plugin manages.
+The baseURL drops its `/v1` suffix — the plugin appends it itself when
+wiring up the AI SDK.
 
 ## API Reference
 
@@ -202,11 +188,11 @@ starts and shadow the `lms` provider this plugin manages.
 
 ## How It Works
 
-1. **Startup**: The plugin reads the user's `lms` provider config, or maps an existing `lmstudio` provider config into `lms` in-place
-2. **Auto-detect**: If no `baseURL`, scans ports 1234, 8080, 11434 on localhost
-3. **Model discovery**: Fetches `GET /api/v1/models`, with fallbacks to `/api/v0/models` and the OpenAI-compatible `/v1/models`
-4. **Config injection**: Maps discovered models into OpenCode's `ProviderConfig` shape (id, name, reasoning, tool_call, modalities, limit)
-5. **Auto-load on first use**: At `chat.params` time, if the requested LLM isn't loaded, opens an SSE stream against `/api/v1/chat` to trigger a load and observe progress. Aborts the stream once `model_load.end` fires so no inference runs. Embedding models go through the synchronous `/api/v1/models/load` endpoint since `/api/v1/chat` is LLM-only
+1. **Startup**: The plugin reads the user's `lms` provider config.
+2. **Auto-detect**: If no `baseURL`, scans ports 1234, 8080, 11434 on localhost.
+3. **Model discovery**: Fetches `GET /api/v1/models`, with fallbacks to `/api/v0/models` and the OpenAI-compatible `/v1/models`.
+4. **Config injection**: Maps discovered models into OpenCode's `ProviderConfig` shape (id, name, reasoning, tool_call, modalities, limit).
+5. **Load on first use**: At `chat.params` time, if the requested LLM isn't loaded, opens an SSE stream against `/api/v1/chat` to trigger a load and observe progress. Aborts the stream once `model_load.end` fires so no inference runs. Embedding models go through the synchronous `/api/v1/models/load` endpoint since `/api/v1/chat` is LLM-only.
 
 ### API Strategy
 
