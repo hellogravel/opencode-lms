@@ -111,7 +111,7 @@ describe("buildProviderConfig", () => {
     expect(pc.options.apiKey).toBe("sk-real");
   });
 
-  it("emits only schema-supported fields in models[*] (no leaked internals)", async () => {
+  it("emits every capability field OpenCode reads, but keeps LMS-internal fields out", async () => {
     installFetchMock((url) => {
       if (url.endsWith("/api/v1/models")) {
         return {
@@ -124,7 +124,7 @@ describe("buildProviderConfig", () => {
                 publisher: "x",
                 key: "m1",
                 display_name: "M1",
-                architecture: "x",
+                architecture: "test-arch",
                 quantization: { name: "Q4", bits_per_weight: 4 },
                 size_bytes: 1000,
                 params_string: "1B",
@@ -143,19 +143,71 @@ describe("buildProviderConfig", () => {
     const result = await buildProviderConfig({ baseURL: "http://h:1234" });
     const model = (result!.providerConfig as { models: Record<string, Record<string, unknown>> })
       .models["m1"];
-    // What we should NOT leak (internal fields the AI SDK doesn't read):
-    expect(model).not.toHaveProperty("variants");
-    expect(model).not.toHaveProperty("family");
+    // LMS-internal fields stay out of the emitted config.
     expect(model).not.toHaveProperty("isLoaded");
     expect(model).not.toHaveProperty("loadedInstance");
+    expect(model).not.toHaveProperty("quantization");
+    expect(model).not.toHaveProperty("format");
+    expect(model).not.toHaveProperty("size_bytes");
     expect(model.options).toBeUndefined(); // no per-model options dump
-    // What we SHOULD emit:
+    // Everything OpenCode's parser reads should be present.
     expect(model).toMatchObject({
       id: "m1",
       name: "M1",
+      family: "test-arch",
+      temperature: true,
       reasoning: false,
+      attachment: false,
       tool_call: false,
+      cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
       limit: { context: 4096, output: 4096 },
+    });
+    // OpenCode's config schema rejects interleaved:false — must be omitted
+    // for non-reasoning models, not emitted as a falsy value.
+    expect(model).not.toHaveProperty("interleaved");
+  });
+
+  it("sets interleaved:{field:'reasoning_content'} for reasoning-capable models", async () => {
+    installFetchMock((url) => {
+      if (url.endsWith("/api/v1/models")) {
+        return {
+          ok: true,
+          status: 200,
+          body: {
+            models: [
+              {
+                type: "llm",
+                publisher: "g",
+                key: "g/r1",
+                display_name: "R1",
+                architecture: "test",
+                quantization: { name: "Q4", bits_per_weight: 4 },
+                size_bytes: 1000,
+                params_string: "4B",
+                loaded_instances: [],
+                max_context_length: 8192,
+                format: "gguf",
+                capabilities: {
+                  vision: true,
+                  trained_for_tool_use: true,
+                  reasoning: { allowed_options: ["off", "on"], default: "on" },
+                },
+                description: null,
+              },
+            ],
+          },
+        };
+      }
+      return { ok: false, status: 404 };
+    });
+    const result = await buildProviderConfig({ baseURL: "http://h:1234" });
+    const model = (result!.providerConfig as { models: Record<string, Record<string, unknown>> })
+      .models["g/r1"];
+    expect(model).toMatchObject({
+      reasoning: true,
+      attachment: true, // vision-capable
+      tool_call: true,
+      interleaved: { field: "reasoning_content" },
     });
   });
 });

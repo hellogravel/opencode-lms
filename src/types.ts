@@ -279,10 +279,7 @@ export interface LMSModelOverride {
     input?: number;
     output: number;
   };
-  variants?: Array<{
-    id: string;
-    disabled?: boolean;
-  }>;
+  variants?: Record<string, { disabled?: boolean }>;
   options?: Record<string, unknown>;
 }
 
@@ -307,8 +304,40 @@ export interface MappedModelConfig {
   id: string;
   name: string;
   family?: string;
+  /**
+   * Whether this model accepts a temperature parameter. Lets OpenCode's UI
+   * surface temperature controls. True for LLMs, false for embedding models.
+   */
+  temperature?: boolean;
   reasoning?: boolean;
+  /**
+   * Whether the model accepts file/image attachments alongside the message.
+   * True for vision-capable LLMs. Distinct from `modalities.input.image` —
+   * `attachment` gates the UI "attach a file" affordance.
+   */
+  attachment?: boolean;
   tool_call?: boolean;
+  /**
+   * Tells OpenCode to interleave a structured reasoning content field from
+   * the upstream's streaming response. Set to `{ field: "reasoning_content" }`
+   * for reasoning-capable LMS models — without this, the reasoning trace
+   * arrives on the wire (from /v1/chat/completions delta.reasoning_content)
+   * but OpenCode's renderer skips it.
+   *
+   * OpenCode's config schema accepts `true | {field}` or omitted — explicit
+   * `false` is rejected. Leave undefined for non-reasoning models.
+   */
+  interleaved?: true | { field: "reasoning_content" | "reasoning_details" };
+  /**
+   * Per-token cost. LMS models are local, so always zero. Setting this
+   * explicitly suppresses noise in OpenCode's cost display.
+   */
+  cost?: {
+    input?: number;
+    output?: number;
+    cache_read?: number;
+    cache_write?: number;
+  };
   modalities?: {
     input: Array<"text" | "image" | "audio" | "video" | "pdf">;
     output: Array<"text" | "audio" | "image" | "video" | "pdf" | "embedding">;
@@ -318,10 +347,13 @@ export interface MappedModelConfig {
     input?: number;
     output?: number;
   };
-  variants?: Array<{
-    id: string;
-    disabled?: boolean;
-  }>;
+  /**
+   * Keyed by variant id. Each value carries per-variant flags. `disabled: true`
+   * tells OpenCode to filter the variant out at parse time. Shape matches
+   * OpenCode's schema at provider.ts:1023:
+   *   variants: Record<string, Record<string, any>>
+   */
+  variants?: Record<string, { disabled?: boolean }>;
   isLoaded: boolean;
   loadedInstance?: {
     id: string;

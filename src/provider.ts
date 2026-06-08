@@ -105,10 +105,11 @@ function buildMinimalProviderConfig(config: LMSProviderConfig): Record<string, u
 }
 
 /**
- * Build the full provider config with discovered models. Only emits fields
- * defined in OpenCode's ProviderConfig schema; anything else (quantization,
- * format, size, loaded_instance_id) is internal to this plugin and stays in
- * the closure rather than leaking into the user-visible config.
+ * Build the full provider config with discovered models. Emits every field
+ * OpenCode's provider parser accepts (verified at packages/opencode/src/
+ * provider/provider.ts:1405-1455 in v1.16.2). Internal fields like
+ * quantization, format, size_bytes stay in MappedModelConfig and don't
+ * cross into the user-visible config.
  */
 function buildProviderConfigFull(
   config: LMSProviderConfig,
@@ -116,14 +117,25 @@ function buildProviderConfigFull(
 ): Record<string, unknown> {
   const openCodeModels: Record<string, unknown> = {};
   for (const [key, model] of Object.entries(models)) {
-    openCodeModels[key] = {
+    const entry: Record<string, unknown> = {
       id: model.id,
       name: model.name,
+      family: model.family,
+      temperature: model.temperature,
       reasoning: model.reasoning,
+      attachment: model.attachment,
       tool_call: model.tool_call,
+      cost: model.cost,
       modalities: model.modalities,
       limit: model.limit,
     };
+    // OpenCode's config schema only accepts `true | {field}` for interleaved
+    // — explicit `false` and `undefined` are both rejected by the validator
+    // even though the runtime parser handles them. Omit the key entirely
+    // unless we have a positive value to send.
+    if (model.interleaved) entry.interleaved = model.interleaved;
+    if (model.variants) entry.variants = model.variants;
+    openCodeModels[key] = entry;
   }
 
   return {

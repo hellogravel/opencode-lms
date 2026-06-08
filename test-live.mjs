@@ -98,10 +98,13 @@ try {
     fail("discoverAndMapModels", `${LLM_KEY} missing from mapped output`);
   }
 
+  // Embedding models are intentionally filtered from discovery output —
+  // OpenCode has no slot that consumes them, and surfacing them would
+  // clutter the chat model picker.
   if (mappedEmbed) {
-    pass(`Mapped embed: name="${mappedEmbed.name}", modalities=${JSON.stringify(mappedEmbed.modalities)}, ctx=${mappedEmbed.limit?.context}`);
+    fail("discoverAndMapModels", `${EMBED_KEY} should be filtered out of mapped output (embedding models don't belong in OpenCode's picker)`);
   } else {
-    fail("discoverAndMapModels", `${EMBED_KEY} missing from mapped output`);
+    pass(`Embedding model correctly filtered from discovery output`);
   }
 
   // ── 4. migrateLmstudioToLms ──
@@ -132,7 +135,9 @@ try {
   section(`Streaming load: ${EMBED_KEY}`);
   const before = await client.getModels();
   const embedBefore = before.find(m => m.key === EMBED_KEY);
-  if (embedBefore.loaded_instances.length > 0) {
+  if (!embedBefore) {
+    fail("embed lookup", `${EMBED_KEY} not present on this server — skipping the embedding load test`);
+  } else if (embedBefore.loaded_instances.length > 0) {
     pass("Already loaded — will skip load test for embed");
   } else {
     let progressSeen = 0, loadStart = false, loadEnd = false, errored = null;
@@ -166,7 +171,9 @@ try {
   section(`Streaming load: ${LLM_KEY}`);
   const before2 = await client.getModels();
   const llmBefore = before2.find(m => m.key === LLM_KEY);
-  if (llmBefore.loaded_instances.length > 0) {
+  if (!llmBefore) {
+    fail("llm lookup", `${LLM_KEY} not present on this server — skipping the streaming load test`);
+  } else if (llmBefore.loaded_instances.length > 0) {
     pass("Already loaded — will skip load test for LLM");
   } else {
     let progressSeen = 0, loadStart = false, loadEnd = false, errored = null;

@@ -6,41 +6,81 @@ import type { LMSModelInfo, MappedModelConfig, LMSModelOverride } from "./types.
 function mapSingleModel(model: LMSModelInfo): MappedModelConfig {
   const isLoaded = model.loaded_instances.length > 0;
   const loadedInstance = isLoaded ? model.loaded_instances[0] : undefined;
+  const isEmbedding = model.type === "embedding";
+  const hasReasoning = Boolean(model.capabilities?.reasoning);
+  const hasVision = Boolean(model.capabilities?.vision);
+  const hasToolUse = Boolean(model.capabilities?.trained_for_tool_use);
 
-  // Determine modalities
+  // OpenCode auto-generates reasoning_effort variants (low/medium/high) for
+  // any reasoning-capable model on @ai-sdk/openai-compatible. For LMS models
+  // that only support on/off internally (allowed_options is just ["off"|"on"]),
+  // the picker is misleading — every level just maps to "on" inside LMS, and
+  // the user is forced to choose between meaningless options. Detect graduated
+  // reasoning by looking for any of the OpenAI-scale levels in allowed_options;
+  // emit `variants` that disable the auto-generated entries when absent so
+  // OpenCode skips the picker.
+  const allowedOptions = model.capabilities?.reasoning?.allowed_options ?? [];
+  const hasGraduatedReasoning = allowedOptions.some(
+    (o) => o === "low" || o === "medium" || o === "high",
+  );
+  const suppressReasoningVariants = hasReasoning && !hasGraduatedReasoning;
+
+  // Modalities. Embedding models intentionally output nothing OpenCode treats
+  // as a chat-renderable modality — that keeps them out of the chat model
+  // picker by default while still letting them be referenced for embeddings.
   let modalities: MappedModelConfig["modalities"];
-  if (model.type === "embedding") {
-    modalities = { input: ["text"], output: ["text"] as unknown as Array<"text" | "audio" | "image" | "video" | "pdf" | "embedding"> };
+  if (isEmbedding) {
+    modalities = { input: ["text"], output: [] };
   } else {
     const inputMods: Array<"text" | "image"> = ["text"];
-    if (model.capabilities?.vision) {
-      inputMods.push("image");
-    }
+    if (hasVision) inputMods.push("image");
     modalities = { input: inputMods, output: ["text"] };
-  }
-
-  // Build variants array if available
-  let variants: MappedModelConfig["variants"];
-  if (model.variants && model.variants.length > 0) {
-    variants = model.variants.map((v) => ({
-      id: v,
-      disabled: v !== model.selected_variant,
-    }));
   }
 
   return {
     id: model.key,
     name: model.display_name || formatModelName(model.key),
     family: model.architecture || undefined,
-    reasoning: model.capabilities?.reasoning ? true : false,
-    tool_call: model.capabilities?.trained_for_tool_use ? true : false,
+    // LMS chat models support a temperature parameter; embedding models don't.
+    temperature: !isEmbedding,
+    reasoning: hasReasoning,
+    // Vision-capable models accept image attachments alongside the message.
+    attachment: hasVision,
+    tool_call: hasToolUse,
+    // The key user-visible setting: tells OpenCode's renderer to interleave
+    // the streaming `delta.reasoning_content` chunks the OpenAI-compat
+    // endpoint already emits for reasoning-capable models. Without this set,
+    // the data arrives on the wire but the TUI never shows it.
+    //
+    // OpenCode's config schema only accepts `true | {field}` for this — must
+    // be undefined for non-reasoning models; explicit `false` is rejected.
+    interleaved: hasReasoning ? { field: "reasoning_content" as const } : undefined,
+    // Local models incur no per-token cost; mark explicitly so OpenCode's
+    // cost display doesn't surface placeholder noise.
+    cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
     modalities,
     // OpenCode's ProviderConfig schema requires both context and output when
     // `limit` is present. LMS doesn't expose a separate output cap (output
     // is bounded by remaining context), so default output to the full
     // context window.
     limit: { context: model.max_context_length, output: model.max_context_length },
-    variants,
+    // Two reasons we touch variants:
+    //   1) LMS file-level variants (e.g. @q4_0, @q8_0) are useless in the
+    //      OpenCode picker — selecting one is a no-op since file changes
+    //      happen at the LM Studio side, not via OpenAI-compat. Don't emit.
+    //   2) OpenCode auto-generates reasoning_effort variants (low/medium/high)
+    //      for any reasoning-capable model on @ai-sdk/openai-compatible. For
+    //      LMS models that only do on/off (the common case), every picker
+    //      option silently maps to the same "on" inside LMS. Suppress by
+    //      emitting the same keys with disabled:true; OpenCode's parser
+    //      filters them after merging and the picker stays hidden.
+    variants: suppressReasoningVariants
+      ? {
+          low: { disabled: true },
+          medium: { disabled: true },
+          high: { disabled: true },
+        }
+      : undefined,
     isLoaded,
     loadedInstance: loadedInstance
       ? { id: loadedInstance.id, context_length: loadedInstance.config.context_length }
@@ -81,8 +121,15 @@ export function discoverAndMapModels(
     }
   }
 
-  // Then, merge discovered models
+  // Then, merge discovered models. Skip embedding models by default —
+  // OpenCode's chat picker doesn't filter on output modality, and OpenCode
+  // has no config slot that consumes embedding models (no embedding_model
+  // field; small_model is for chat title generation, not embeddings). Users
+  // who explicitly want one in the picker can list it in their `models`
+  // overrides — that path bypasses this filter.
   for (const model of discovered) {
+    if (model.type === "embedding") continue;
+
     // Check if already overridden
     const existingKey = Object.keys(result).find(
       (key) => result[key].id === model.key || key === model.key,

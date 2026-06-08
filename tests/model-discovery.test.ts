@@ -28,12 +28,16 @@ function llmModel(overrides: Partial<LMSModelInfo> = {}): LMSModelInfo {
 describe("discoverAndMapModels", () => {
   it("maps a basic LLM with all fields", () => {
     const result = discoverAndMapModels([llmModel()], undefined);
-    expect(result["test/model-1"]).toMatchObject({
+    const m = result["test/model-1"];
+    expect(m).toMatchObject({
       id: "test/model-1",
       name: "Test Model 1",
       family: "test-arch",
+      temperature: true,
       reasoning: false,
+      attachment: false,
       tool_call: false,
+      cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
       modalities: { input: ["text"], output: ["text"] },
       limit: { context: 8192, output: 8192 },
       isLoaded: false,
@@ -41,6 +45,57 @@ describe("discoverAndMapModels", () => {
       format: "gguf",
       size_bytes: 1000,
     });
+    // OpenCode's config schema rejects interleaved:false — left undefined
+    // (and we omit it on the emit side) so the runtime parser falls through
+    // to its own default.
+    expect(m.interleaved).toBeUndefined();
+  });
+
+  it("sets interleaved:{field:'reasoning_content'} for reasoning-capable models", () => {
+    const result = discoverAndMapModels(
+      [
+        llmModel({
+          capabilities: {
+            vision: false,
+            trained_for_tool_use: false,
+            reasoning: { allowed_options: ["off", "on"], default: "on" },
+          },
+        }),
+      ],
+      undefined,
+    );
+    expect(result["test/model-1"].interleaved).toEqual({ field: "reasoning_content" });
+  });
+
+  it("sets attachment:true for vision-capable models", () => {
+    const result = discoverAndMapModels(
+      [llmModel({ capabilities: { vision: true, trained_for_tool_use: false } })],
+      undefined,
+    );
+    expect(result["test/model-1"].attachment).toBe(true);
+  });
+
+  it("skips embedding models from auto-discovery (they have no role in OpenCode's chat picker)", () => {
+    const result = discoverAndMapModels(
+      [
+        llmModel({ key: "chat-llm" }),
+        llmModel({ type: "embedding", key: "embed-1", capabilities: undefined as never }),
+      ],
+      undefined,
+    );
+    expect(result["chat-llm"]).toBeDefined();
+    expect(result["embed-1"]).toBeUndefined();
+  });
+
+  it("keeps an embedding model in the result if the user explicitly added it to overrides", () => {
+    const result = discoverAndMapModels(
+      [llmModel({ type: "embedding", key: "embed-1", capabilities: undefined as never })],
+      {
+        "embed-1": { id: "embed-1", name: "My Embedder" },
+      },
+    );
+    expect(result["embed-1"]).toBeDefined();
+    expect(result["embed-1"].name).toBe("My Embedder");
   });
 
   it("adds 'image' to input modalities when vision is true", () => {
@@ -99,13 +154,6 @@ describe("discoverAndMapModels", () => {
     expect(result["qwen-coder-7b"].name).toBe("Qwen Coder 7B");
   });
 
-  it("maps embedding type to text input/output modalities", () => {
-    const result = discoverAndMapModels(
-      [llmModel({ type: "embedding", key: "embed-1", capabilities: undefined as never })],
-      undefined,
-    );
-    expect(result["embed-1"].modalities?.input).toEqual(["text"]);
-  });
 
   it("preserves user-configured overrides as the source of truth", () => {
     const result = discoverAndMapModels(
@@ -136,21 +184,74 @@ describe("discoverAndMapModels", () => {
     expect(result["qwen"].loadedInstance).toEqual({ id: "inst-1", context_length: 2048 });
   });
 
-  it("emits variants from selected_variant + variants list", () => {
+  it("does not emit variants for non-reasoning models (no LMS quantization clutter)", () => {
     const result = discoverAndMapModels(
       [
         llmModel({
           variants: ["q4_0", "q8_0", "f16"],
           selected_variant: "q4_0",
+          // capabilities default: no reasoning
         }),
       ],
       undefined,
     );
-    expect(result["test/model-1"].variants).toEqual([
-      { id: "q4_0", disabled: false },
-      { id: "q8_0", disabled: true },
-      { id: "f16", disabled: true },
-    ]);
+    expect(result["test/model-1"].variants).toBeUndefined();
+  });
+
+  it("disables auto-generated reasoning-effort variants for on/off-only reasoning models", () => {
+    // Most LMS reasoning models — gemma, mistral, llama variants — advertise
+    // only on/off. Without intervention, OpenCode would show a misleading
+    // low/medium/high picker. Disable those keys; the parse-time filter
+    // clears them and the picker stays hidden.
+    const result = discoverAndMapModels(
+      [
+        llmModel({
+          capabilities: {
+            vision: false,
+            trained_for_tool_use: false,
+            reasoning: { allowed_options: ["off", "on"], default: "on" },
+          },
+        }),
+      ],
+      undefined,
+    );
+    expect(result["test/model-1"].variants).toEqual({
+      low: { disabled: true },
+      medium: { disabled: true },
+      high: { disabled: true },
+    });
+  });
+
+  it("leaves variants undefined for reasoning models that DO support graduated levels", () => {
+    // Hypothetical LMS model that exposes graduated effort levels — let
+    // OpenCode's auto-generated picker stand.
+    const result = discoverAndMapModels(
+      [
+        llmModel({
+          capabilities: {
+            vision: false,
+            trained_for_tool_use: false,
+            reasoning: { allowed_options: ["off", "low", "medium", "high"], default: "medium" },
+          },
+        }),
+      ],
+      undefined,
+    );
+    expect(result["test/model-1"].variants).toBeUndefined();
+  });
+
+  it("preserves variants when the user sets them in an override", () => {
+    const result = discoverAndMapModels(
+      [],
+      {
+        "custom-id": {
+          id: "custom-id",
+          name: "Custom",
+          variants: { "v1": { disabled: false } },
+        },
+      },
+    );
+    expect(result["custom-id"].variants).toEqual({ "v1": { disabled: false } });
   });
 
   it("preserves the verbatim model key, including slashes", () => {

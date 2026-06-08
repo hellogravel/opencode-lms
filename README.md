@@ -4,11 +4,12 @@ An [LM Studio](https://lmstudio.ai) provider plugin for [OpenCode](https://openc
 
 ## What it does
 
-- Discovers the models your LM Studio server is hosting and exposes them in OpenCode.
+- Discovers the chat models your LM Studio server is hosting and exposes them in OpenCode. Embedding models are filtered out by default (OpenCode has no slot that consumes them); list one in `provider.lms.models` to opt it back in.
 - Loads an unloaded LLM on first reference; load progress is logged to the OpenCode server log.
-- Loads embedding models via LM Studio's synchronous load endpoint.
 - Forwards an `Authorization: Bearer …` header to LM Studio when `apiKey` is set.
 - Demotes `reasoning_effort: "max"` to `"xhigh"` before requests leave OpenCode, since LM Studio rejects `max`.
+- Sets each model's OpenCode capability flags from what LM Studio reports — `reasoning`, `tool_call`, `attachment` (vision models), `temperature`, `family`, etc. — and marks reasoning-capable models with `interleaved: { field: "reasoning_content" }` so OpenCode renders the streaming reasoning trace live in the TUI.
+- Suppresses OpenCode's auto-generated reasoning-effort picker (low/medium/high) for models that only support binary on/off reasoning, since every choice would route to "on" inside LM Studio anyway. Graduated reasoning models keep the picker.
 
 ## Set up
 
