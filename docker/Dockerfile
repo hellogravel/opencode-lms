@@ -54,10 +54,10 @@ RUN cd /home/coder/opencode-lms \
 # The cache dir name *literally* contains the `@file:/...` spec, which
 # becomes a deeply nested path on disk — that's exactly how OpenCode's
 # own cache stores it for other file:-installed plugins.
-RUN CACHE_DIR="/home/coder/.cache/opencode/packages/opencode-lms@file:/home/coder/opencode-lms" \
+RUN CACHE_DIR="/home/coder/.cache/opencode/packages/@hellogravel/opencode-lms@file:/home/coder/opencode-lms" \
     && mkdir -p "$CACHE_DIR" \
     && cd "$CACHE_DIR" \
-    && printf '{"dependencies":{"opencode-lms":"file:/home/coder/opencode-lms"}}' > package.json \
+    && printf '{"dependencies":{"@hellogravel/opencode-lms":"file:/home/coder/opencode-lms"}}' > package.json \
     && npm install --no-audit --no-fund --no-progress --omit=optional
 
 WORKDIR /workspace

@@ -22,10 +22,10 @@ Useful when:
   time via BuildKit's `additional_contexts`, `npm ci && npm run build`
   runs inside the image, and the Dockerfile pre-populates OpenCode's
   plugin cache at
-  `~/.cache/opencode/packages/opencode-lms@file:/home/coder/opencode-lms/`
+  `~/.cache/opencode/packages/@hellogravel/opencode-lms@file:/home/coder/opencode-lms/`
   so the runtime's "auto" installer finds it ready to import. The
   generated config references it as
-  `"plugin": ["opencode-lms@file:/home/coder/opencode-lms"]` —
+  `"plugin": ["@hellogravel/opencode-lms@file:/home/coder/opencode-lms"]` —
   the `<name>@file:<path>` form is the npm spec OpenCode actually
   parses (a bare `file:/...` entry silently fails to install).
 - The container's `opencode.jsonc` is **regenerated on every start** by
@@ -121,7 +121,7 @@ LMS_MODEL=lms/qwen/qwen3.6-35b-a3b docker compose up -d
   paths — `git clone && docker compose up --build` works from anywhere.
 - **Plugin pre-staged in opencode's cache.** A bare `file:` plugin
   spec doesn't parse; the canonical form is `<name>@file:<path>`. We
-  pre-populate `~/.cache/opencode/packages/opencode-lms@file:/.../`
+  pre-populate `~/.cache/opencode/packages/@hellogravel/opencode-lms@file:/.../`
   with the right shape so OpenCode's auto-install finds it ready and
   skips the npm registry fetch — fast startup, works offline.
 - **Config regenerated every start.** Deterministic surface: whatever

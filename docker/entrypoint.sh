@@ -17,7 +17,7 @@ ESCAPED_API_KEY=$(node -e 'process.stdout.write(JSON.stringify(process.env.LM_ST
 cat > "$CONFIG" <<EOF
 {
   "\$schema": "https://opencode.ai/config.json",
-  "disabled_providers": ["opencode", "lmstudio"],
+  "disabled_providers": ["lmstudio"],
   "model": "${LMS_MODEL:-lms/google/gemma-4-e4b}",
   "provider": {
     "lms": {
@@ -30,7 +30,7 @@ cat > "$CONFIG" <<EOF
       }
     }
   },
-  "plugin": ["opencode-lms@file:/home/coder/opencode-lms"]
+  "plugin": ["@hellogravel/opencode-lms@file:/home/coder/opencode-lms"]
 }
 EOF
 

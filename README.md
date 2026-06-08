@@ -1,8 +1,6 @@
-# opencode-lms
+# @hellogravel/opencode-lms
 
-First-class [LM Studio](https://lmstudio.ai) provider plugin for [OpenCode](https://opencode.ai).
-
-Replaces the broken built-in `lmstudio` provider and the unmaintained `opencode-lmstudio` plugin.
+An [LM Studio](https://lmstudio.ai) provider plugin for [OpenCode](https://opencode.ai) — dynamic model discovery, streaming auto-load, and full integration with LM Studio's REST API.
 
 ## Features
 
@@ -19,8 +17,12 @@ Replaces the broken built-in `lmstudio` provider and the unmaintained `opencode-
 ### 1. Install
 
 ```bash
-npm install opencode-lms
+npm install @hellogravel/opencode-lms
 ```
+
+(OpenCode auto-installs plugins listed in `config.plugin` on first run, so
+manual `npm install` is optional — but if you want to install
+explicitly, or pin the version, that's the command.)
 
 ### 2. Add to your OpenCode config
 
@@ -28,15 +30,17 @@ In `~/.config/opencode/opencode.jsonc`:
 
 ```jsonc
 {
-  "disabled_providers": ["opencode"],
+  "disabled_providers": ["lmstudio"],
   "provider": {
     "lms": {
       "name": "LM Studio",
-      "baseURL": "http://127.0.0.1:1234"
+      "options": {
+        "baseURL": "http://127.0.0.1:1234"
+      }
     }
   },
   "model": "lms/google/gemma-4-26b-a4b",
-  "plugin": ["opencode-lms"]
+  "plugin": ["@hellogravel/opencode-lms"]
 }
 ```
 
@@ -45,7 +49,7 @@ Or use auto-detection (zero config):
 ```jsonc
 {
   "model": "lms/google/gemma-4-26b-a4b",
-  "plugin": ["opencode-lms"]
+  "plugin": ["@hellogravel/opencode-lms"]
 }
 ```
 
@@ -65,7 +69,9 @@ That's it. The plugin will auto-discover all available models.
 {
   "provider": {
     "lms": {
-      "autoDetect": true
+      "options": {
+        "autoDetect": true
+      }
     }
   }
 }
@@ -77,8 +83,10 @@ That's it. The plugin will auto-discover all available models.
 {
   "provider": {
     "lms": {
-      "baseURL": "http://192.168.12.166:1234",
-      "apiKey": "your-api-token"
+      "options": {
+        "baseURL": "http://192.168.12.166:1234",
+        "apiKey": "your-api-token"
+      }
     }
   }
 }
@@ -90,7 +98,9 @@ That's it. The plugin will auto-discover all available models.
 {
   "provider": {
     "lms": {
-      "baseURL": "http://127.0.0.1:1234",
+      "options": {
+        "baseURL": "http://127.0.0.1:1234"
+      },
       "models": {
         "my-custom": {
           "id": "my-model@gguf",
@@ -109,7 +119,9 @@ That's it. The plugin will auto-discover all available models.
 {
   "provider": {
     "lms": {
-      "autoDetect": false,
+      "options": {
+        "autoDetect": false
+      },
       "models": {
         "qwen/qwen3.6-35b-a3b": {
           "id": "qwen/qwen3.6-35b-a3b",
@@ -141,19 +153,25 @@ If you have an existing `lmstudio` provider in your config:
 }
 ```
 
-The plugin will **auto-migrate** it to `lms` on startup. The config below is equivalent:
+The plugin will pick it up on startup and present it as `lms`. The config below is the equivalent native form:
 
 ```jsonc
 {
   "provider": {
     "lms": {
       "name": "LM Studio (Custom)",
-      "baseURL": "http://192.168.12.166:1234",
-      "apiKey": "your-key"
+      "options": {
+        "baseURL": "http://192.168.12.166:1234",
+        "apiKey": "your-key"
+      }
     }
   }
 }
 ```
+
+During migration the plugin also adds `"lmstudio"` to `disabled_providers`,
+so OpenCode's built-in `lmstudio` provider doesn't re-register on subsequent
+starts and shadow the `lms` provider this plugin manages.
 
 ## API Reference
 
@@ -184,7 +202,7 @@ The plugin will **auto-migrate** it to `lms` on startup. The config below is equ
 
 ## How It Works
 
-1. **Startup**: The plugin reads either the user's `lms` provider config or migrates a legacy `lmstudio` config in-place
+1. **Startup**: The plugin reads the user's `lms` provider config, or maps an existing `lmstudio` provider config into `lms` in-place
 2. **Auto-detect**: If no `baseURL`, scans ports 1234, 8080, 11434 on localhost
 3. **Model discovery**: Fetches `GET /api/v1/models`, with fallbacks to `/api/v0/models` and the OpenAI-compatible `/v1/models`
 4. **Config injection**: Maps discovered models into OpenCode's `ProviderConfig` shape (id, name, reasoning, tool_call, modalities, limit)

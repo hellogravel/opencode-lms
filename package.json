@@ -1,7 +1,7 @@
 {
-  "name": "opencode-lms",
+  "name": "@hellogravel/opencode-lms",
   "version": "0.1.0",
-  "description": "First-class LM Studio provider plugin for OpenCode — dynamic model discovery, lifecycle management, and full API integration",
+  "description": "An LM Studio provider plugin for OpenCode — dynamic model discovery, streaming auto-load, and full LM Studio REST API integration",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,7 +12,9 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc",
@@ -32,16 +34,24 @@
   },
   "keywords": [
     "opencode",
+    "opencode-plugin",
     "lmstudio",
     "lm-studio",
-    "plugin",
     "local-llm",
     "openai-compatible",
     "provider"
   ],
+  "author": "Hello Gravel <chris@hellogravel.com> (https://hellogravel.com)",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/anomalyco/opencode-lms"
+    "url": "git+https://github.com/hellogravel/opencode-lms.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hellogravel/opencode-lms/issues"
+  },
+  "homepage": "https://github.com/hellogravel/opencode-lms#readme",
+  "publishConfig": {
+    "access": "public"
   }
 }

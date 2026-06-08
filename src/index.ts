@@ -95,6 +95,18 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
 
       if (migrated) {
         delete (cfg.provider as Record<string, unknown>)[LEGACY_PROVIDER_ID];
+
+        // Also disable OpenCode's built-in `lmstudio` provider so it doesn't
+        // re-register itself on the next boot and shadow our `lms` provider.
+        // Push into the existing array if there is one; otherwise create it.
+        const root = config as { disabled_providers?: string[] };
+        if (!Array.isArray(root.disabled_providers)) {
+          root.disabled_providers = [];
+        }
+        if (!root.disabled_providers.includes(LEGACY_PROVIDER_ID)) {
+          root.disabled_providers.push(LEGACY_PROVIDER_ID);
+          console.log("[opencode-lms] Added 'lmstudio' to disabled_providers");
+        }
       }
 
       if (result.health?.healthy && result.health.baseURL) {
