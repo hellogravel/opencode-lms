@@ -17,10 +17,9 @@ ESCAPED_API_KEY=$(node -e 'process.stdout.write(JSON.stringify(process.env.LM_ST
 cat > "$CONFIG" <<EOF
 {
   "\$schema": "https://opencode.ai/config.json",
-  "disabled_providers": ["lmstudio"],
-  "model": "${LMS_MODEL:-lms/google/gemma-4-e4b}",
+  "model": "${LMS_MODEL:-lmstudio/google/gemma-4-e4b}",
   "provider": {
-    "lms": {
+    "lmstudio": {
       "name": "LM Studio",
       "options": {
         "baseURL": "${LMS_BASE_URL:-http://host.docker.internal:1234}",
@@ -37,7 +36,7 @@ EOF
 # Surface the resolved config to the container log so the user can see what's
 # actually loaded — minus the api key.
 echo "[opencode-lms docker] wrote $CONFIG with:"
-echo "  model=${LMS_MODEL:-lms/google/gemma-4-e4b}"
+echo "  model=${LMS_MODEL:-lmstudio/google/gemma-4-e4b}"
 echo "  baseURL=${LMS_BASE_URL:-http://host.docker.internal:1234}"
 echo "  apiKey=$( [ -n "${LM_STUDIO_API_KEY:-}" ] && echo "(set, ${#LM_STUDIO_API_KEY} chars)" || echo "(unset)" )"
 echo "  autoDownload=${LMS_AUTO_DOWNLOAD:-false}"

@@ -1,5 +1,15 @@
 // Core types for LM Studio API and plugin internals
 
+import type { ProviderHook } from "@opencode-ai/plugin";
+
+// ─── OpenCode v2 model shape ───
+//
+// The `provider.models` hook returns OpenCode's strict `Model` (a.k.a.
+// ModelV2) objects. Rather than depend on `@opencode-ai/sdk/v2` directly,
+// derive the type from the plugin's own ProviderHook signature so it always
+// tracks whatever @opencode-ai/plugin version is installed.
+export type ModelV2 = Awaited<ReturnType<NonNullable<ProviderHook["models"]>>>[string];
+
 // ─── LM Studio REST v1 API types ───
 
 export interface LMSModelInfo {

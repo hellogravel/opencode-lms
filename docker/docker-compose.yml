@@ -18,7 +18,7 @@ services:
       - OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD:?set OPENCODE_SERVER_PASSWORD in .env or your shell}
       - LM_STUDIO_API_KEY=${LM_STUDIO_API_KEY:-}
       - LMS_BASE_URL=${LMS_BASE_URL:-http://host.docker.internal:1234}
-      - LMS_MODEL=${LMS_MODEL:-lms/google/gemma-4-e4b}
+      - LMS_MODEL=${LMS_MODEL:-lmstudio/google/gemma-4-e4b}
       - LMS_AUTO_DOWNLOAD=${LMS_AUTO_DOWNLOAD:-false}
       - LMS_DISABLE_AUTO_LOAD=${LMS_DISABLE_AUTO_LOAD:-false}
     ports:

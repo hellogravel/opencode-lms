@@ -80,7 +80,7 @@ On first request to an unloaded model:
 
 ```
 [opencode-lms docker] wrote /home/coder/.config/opencode/opencode.jsonc with:
-  model=lms/google/gemma-4-e4b
+  model=lmstudio/google/gemma-4-e4b
   baseURL=http://host.docker.internal:1234
   apiKey=(set, 35 chars)
   ...
@@ -104,14 +104,14 @@ auth issue with the LMS endpoint and not the plugin itself.
 | `OPENCODE_SERVER_PASSWORD` | required | OpenCode server auth password |
 | `LM_STUDIO_API_KEY` | (empty) | Bearer token sent to LM Studio; required if LM Studio has auth on |
 | `LMS_BASE_URL` | `http://host.docker.internal:1234` | LM Studio base URL (no `/v1` suffix). Override when LMS isn't on the Docker host. |
-| `LMS_MODEL` | `lms/google/gemma-4-e4b` | Default OpenCode model |
+| `LMS_MODEL` | `lmstudio/google/gemma-4-e4b` | Default OpenCode model |
 | `LMS_AUTO_DOWNLOAD` | `false` | If `true`, an unknown model triggers a download via `/api/v1/models/download` |
 | `LMS_DISABLE_AUTO_LOAD` | `false` | If `true`, the plugin won't auto-load missing models |
 
 To switch models without rebuilding:
 
 ```sh
-LMS_MODEL=lms/qwen/qwen3.6-35b-a3b docker compose up -d
+LMS_MODEL=lmstudio/qwen/qwen3.6-35b-a3b docker compose up -d
 ```
 
 ## Design notes

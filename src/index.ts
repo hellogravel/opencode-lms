@@ -1,8 +1,7 @@
 import type { Plugin, PluginInput, Hooks } from "@opencode-ai/plugin";
-import type { LMSModelInfo, LMSProviderConfig } from "./types.js";
-import { buildProviderConfig } from "./provider.js";
-import { LMSClient } from "./api-client.js";
-import { ModelLifecycle } from "./model-lifecycle.js";
+import type { LMSModelInfo, LMSProviderConfig, ModelV2 } from "./types.js";
+import { buildProvider } from "./provider.js";
+import type { ModelLifecycle } from "./model-lifecycle.js";
 import {
   isModelLoadStart,
   isModelLoadProgress,
@@ -10,17 +9,21 @@ import {
   isError,
 } from "./streaming.js";
 
-const PROVIDER_ID = "lms";
+// Matches the models.dev catalog id — required for the `provider.models` hook
+// to fire (OpenCode skips the hook for providers not in that catalog).
+const PROVIDER_ID = "lmstudio";
 
 export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => {
   console.log("[opencode-lms] LM Studio plugin initialized");
 
-  let client: LMSClient | null = null;
   let lifecycle: ModelLifecycle | null = null;
   let resolvedBaseURL: string | null = null;
   let disableAutoLoad = false;
   let autoDownload = false;
   let downloadTimeout: number | undefined;
+  // Populated by the `config` hook (which runs first) and handed back to
+  // OpenCode by the `provider.models` hook.
+  let discoveredModels: Record<string, ModelV2> = {};
 
   function normalizeBaseURL(url: string | undefined): string | undefined {
     if (!url) return undefined;
@@ -114,33 +117,37 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
         ? readUserConfig(providers[PROVIDER_ID])
         : null;
 
-      const result = await buildProviderConfig(userConfig);
-      if (!result) return;
+      const built = await buildProvider(userConfig);
 
+      lifecycle = built.lifecycle;
+      resolvedBaseURL = built.resolvedBaseURL;
+      discoveredModels = built.models;
+      disableAutoLoad = Boolean(userConfig?.disableAutoLoad);
+      autoDownload = Boolean(userConfig?.autoDownload);
+      downloadTimeout = userConfig?.downloadTimeout;
+
+      // Writing the provider entry is what *enables* the provider — a
+      // models.dev catalog provider stays hidden until a config/env/auth entry
+      // promotes it. The model list itself flows through `provider.models`.
       const cfg = config as { provider?: Record<string, unknown> };
       if (!cfg.provider) cfg.provider = {};
-      cfg.provider[PROVIDER_ID] = result.providerConfig;
+      cfg.provider[PROVIDER_ID] = built.providerEntry;
 
-      if (result.health?.healthy && result.health.baseURL) {
-        resolvedBaseURL = result.health.baseURL;
-        client = new LMSClient({
-          baseURL: resolvedBaseURL,
-          apiKey: userConfig?.apiKey,
-          loadTimeout: userConfig?.loadTimeout,
-        });
-        lifecycle = new ModelLifecycle(client);
-        disableAutoLoad = Boolean(userConfig?.disableAutoLoad);
-        autoDownload = Boolean(userConfig?.autoDownload);
-        downloadTimeout = userConfig?.downloadTimeout;
-
-        const modelCount = Object.keys(result.models).length;
+      if (built.health?.healthy) {
         console.log(
-          `[opencode-lms] Discovered ${modelCount} model(s) at ${resolvedBaseURL}` +
+          `[opencode-lms] Discovered ${Object.keys(built.models).length} model(s) at ${resolvedBaseURL}` +
             (autoDownload ? " (autoDownload on)" : ""),
         );
       } else {
         console.warn("[opencode-lms] LM Studio server not reachable — provider registered with no models");
       }
+    },
+
+    provider: {
+      id: PROVIDER_ID,
+      // OpenCode runs the `config` hook before building provider state, so
+      // `discoveredModels` is already populated by the time this fires.
+      models: async () => discoveredModels,
     },
 
     "chat.params": async (input, output) => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { buildProviderConfig, resolveProviderConfig } from "../src/provider.js";
+import { buildProvider, resolveProviderConfig } from "../src/provider.js";
 
 function installFetchMock(handler: (url: string) => { ok: boolean; status: number; body?: unknown }) {
   vi.stubGlobal("fetch", async (url: string) => {
@@ -39,20 +39,22 @@ describe("resolveProviderConfig", () => {
   });
 });
 
-describe("buildProviderConfig", () => {
+describe("buildProvider", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.unstubAllGlobals());
 
-  it("returns an empty models map when the server is unreachable", async () => {
+  it("returns an empty models map and a model-less provider entry when the server is unreachable", async () => {
     installFetchMock(() => ({ ok: false, status: 0 }));
-    const result = await buildProviderConfig({ baseURL: "http://unreachable:1234" });
-    expect(result).not.toBeNull();
-    expect(result!.models).toEqual({});
-    expect(result!.health?.healthy).toBeFalsy();
-    expect((result!.providerConfig as { id: string }).id).toBe("lms");
+    const result = await buildProvider({ baseURL: "http://unreachable:1234" });
+    expect(result.models).toEqual({});
+    expect(result.health?.healthy).toBeFalsy();
+    expect(result.lifecycle).toBeNull();
+    const entry = result.providerEntry as { options: { baseURL: string }; models: Record<string, unknown> };
+    expect(entry.options.baseURL).toBe("http://unreachable:1234/v1");
+    expect(entry.models).toEqual({});
   });
 
-  it("discovers and maps models when the server is reachable", async () => {
+  it("discovers models and returns them in ModelV2 shape via the hook map", async () => {
     installFetchMock((url) => {
       if (url.endsWith("/api/v1/models")) {
         return {
@@ -85,33 +87,30 @@ describe("buildProviderConfig", () => {
       }
       return { ok: false, status: 404 };
     });
-    const result = await buildProviderConfig({ baseURL: "http://host:1234" });
-    expect(result).not.toBeNull();
-    expect(result!.health?.healthy).toBe(true);
-    expect(result!.models["google/gemma-4-e4b"]).toMatchObject({
+    const result = await buildProvider({ baseURL: "http://host:1234" });
+    expect(result.health?.healthy).toBe(true);
+    const model = result.models["google/gemma-4-e4b"];
+    expect(model).toMatchObject({
       id: "google/gemma-4-e4b",
+      providerID: "lmstudio",
       name: "Gemma 4 E4B",
-      reasoning: true,
-      tool_call: true,
+      api: { id: "google/gemma-4-e4b", url: "http://host:1234/v1", npm: "@ai-sdk/openai-compatible" },
+      capabilities: { reasoning: true, toolcall: true, attachment: true },
     });
-    // Provider config emits an /v1 suffix for the AI SDK (which is OpenAI-style)
-    const pc = result!.providerConfig as {
-      options: { baseURL: string; apiKey: string };
-      models: Record<string, unknown>;
-    };
-    expect(pc.options.baseURL).toBe("http://host:1234/v1");
-    expect(pc.options.apiKey).toBe("lm-studio"); // default placeholder when none provided
-    expect(Object.keys(pc.models)).toEqual(["google/gemma-4-e4b"]);
+    // baseURL gets the /v1 suffix the OpenAI-style SDK expects.
+    const entry = result.providerEntry as { options: { baseURL: string; apiKey: string } };
+    expect(entry.options.baseURL).toBe("http://host:1234/v1");
+    expect(entry.options.apiKey).toBe("lm-studio"); // default placeholder when none provided
   });
 
-  it("propagates user apiKey into the provider config", async () => {
+  it("propagates user apiKey into the provider entry", async () => {
     installFetchMock(() => ({ ok: true, status: 200, body: { models: [] } }));
-    const result = await buildProviderConfig({ baseURL: "http://h:1234", apiKey: "sk-real" });
-    const pc = result!.providerConfig as { options: { apiKey: string } };
-    expect(pc.options.apiKey).toBe("sk-real");
+    const result = await buildProvider({ baseURL: "http://h:1234", apiKey: "sk-real" });
+    const entry = result.providerEntry as { options: { apiKey: string } };
+    expect(entry.options.apiKey).toBe("sk-real");
   });
 
-  it("emits every capability field OpenCode reads, but keeps LMS-internal fields out", async () => {
+  it("produces a complete ModelV2 object for a plain non-reasoning model", async () => {
     installFetchMock((url) => {
       if (url.endsWith("/api/v1/models")) {
         return {
@@ -140,31 +139,27 @@ describe("buildProviderConfig", () => {
       }
       return { ok: false, status: 404 };
     });
-    const result = await buildProviderConfig({ baseURL: "http://h:1234" });
-    const model = (result!.providerConfig as { models: Record<string, Record<string, unknown>> })
-      .models["m1"];
-    // LMS-internal fields stay out of the emitted config.
+    const result = await buildProvider({ baseURL: "http://h:1234" });
+    const model = result.models["m1"];
+    // LMS-internal fields never cross into the ModelV2 shape.
     expect(model).not.toHaveProperty("isLoaded");
-    expect(model).not.toHaveProperty("loadedInstance");
     expect(model).not.toHaveProperty("quantization");
-    expect(model).not.toHaveProperty("format");
-    expect(model).not.toHaveProperty("size_bytes");
-    expect(model.options).toBeUndefined(); // no per-model options dump
-    // Everything OpenCode's parser reads should be present.
     expect(model).toMatchObject({
       id: "m1",
       name: "M1",
       family: "test-arch",
-      temperature: true,
-      reasoning: false,
-      attachment: false,
-      tool_call: false,
-      cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+      status: "active",
+      capabilities: {
+        temperature: true,
+        reasoning: false,
+        attachment: false,
+        toolcall: false,
+        // ModelV2 accepts a plain boolean here — no more omit-or-reject dance.
+        interleaved: false,
+      },
+      cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
       limit: { context: 4096, output: 4096 },
     });
-    // OpenCode's config schema rejects interleaved:false — must be omitted
-    // for non-reasoning models, not emitted as a falsy value.
-    expect(model).not.toHaveProperty("interleaved");
   });
 
   it("sets interleaved:{field:'reasoning_content'} for reasoning-capable models", async () => {
@@ -200,14 +195,58 @@ describe("buildProviderConfig", () => {
       }
       return { ok: false, status: 404 };
     });
-    const result = await buildProviderConfig({ baseURL: "http://h:1234" });
-    const model = (result!.providerConfig as { models: Record<string, Record<string, unknown>> })
-      .models["g/r1"];
-    expect(model).toMatchObject({
+    const result = await buildProvider({ baseURL: "http://h:1234" });
+    expect(result.models["g/r1"].capabilities).toMatchObject({
       reasoning: true,
       attachment: true, // vision-capable
-      tool_call: true,
+      toolcall: true,
       interleaved: { field: "reasoning_content" },
+    });
+  });
+
+  it("carries variant-suppression for on/off-only reasoning models in the provider entry, not the hook model", async () => {
+    installFetchMock((url) => {
+      if (url.endsWith("/api/v1/models")) {
+        return {
+          ok: true,
+          status: 200,
+          body: {
+            models: [
+              {
+                type: "llm",
+                publisher: "g",
+                key: "g/r1",
+                display_name: "R1",
+                architecture: "test",
+                quantization: { name: "Q4", bits_per_weight: 4 },
+                size_bytes: 1000,
+                params_string: "4B",
+                loaded_instances: [],
+                max_context_length: 8192,
+                format: "gguf",
+                capabilities: {
+                  vision: false,
+                  trained_for_tool_use: false,
+                  reasoning: { allowed_options: ["off", "on"], default: "on" },
+                },
+                description: null,
+              },
+            ],
+          },
+        };
+      }
+      return { ok: false, status: 404 };
+    });
+    const result = await buildProvider({ baseURL: "http://h:1234" });
+    // The hook model carries no variants (so OpenCode's auto-gen would fire)...
+    expect(result.models["g/r1"]).not.toHaveProperty("variants");
+    // ...and the config entry disables the auto-generated effort levels, which
+    // is the one path where OpenCode actually filters disabled variants.
+    const entry = result.providerEntry as { models: Record<string, { variants: Record<string, unknown> }> };
+    expect(entry.models["g/r1"].variants).toEqual({
+      low: { disabled: true },
+      medium: { disabled: true },
+      high: { disabled: true },
     });
   });
 });

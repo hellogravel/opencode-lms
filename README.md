@@ -4,7 +4,7 @@ An [LM Studio](https://lmstudio.ai) provider plugin for [OpenCode](https://openc
 
 ## What it does
 
-- Discovers the chat models your LM Studio server is hosting and exposes them in OpenCode. Embedding models are filtered out by default (OpenCode has no slot that consumes them); list one in `provider.lms.models` to opt it back in.
+- Discovers the chat models your LM Studio server is hosting and exposes them in OpenCode. Embedding models are filtered out by default (OpenCode has no slot that consumes them); list one in `provider.lmstudio.models` to opt it back in.
 - Loads an unloaded LLM on first reference; load progress is logged to the OpenCode server log.
 - Forwards an `Authorization: Bearer …` header to LM Studio when `apiKey` is set.
 - Demotes `reasoning_effort: "max"` to `"xhigh"` before requests leave OpenCode, since LM Studio rejects `max`.
@@ -17,9 +17,8 @@ Add the plugin and provider to `~/.config/opencode/opencode.jsonc`:
 
 ```jsonc
 {
-  "disabled_providers": ["lmstudio"],
   "provider": {
-    "lms": {
+    "lmstudio": {
       "name": "LM Studio",
       "options": {
         "baseURL": "http://127.0.0.1:1234",
@@ -27,20 +26,22 @@ Add the plugin and provider to `~/.config/opencode/opencode.jsonc`:
       }
     }
   },
-  "model": "lms/google/gemma-4-26b-a4b",
+  "model": "lmstudio/google/gemma-4-26b-a4b",
   "plugin": ["@hellogravel/opencode-lms"]
 }
 ```
 
 Start LM Studio's server (`lms server start`) and restart OpenCode.
 
-- `disabled_providers: ["lmstudio"]` turns off OpenCode's built-in `lmstudio` provider so it doesn't compete with this plugin's `lms` provider.
+- This plugin extends OpenCode's built-in `lmstudio` provider in place — it supplies the live model list via OpenCode's `provider.models` hook. Do **not** add `lmstudio` to `disabled_providers`, or the plugin's models get disabled too.
 - `apiKey` is only needed when LM Studio has API token auth enabled.
 - `baseURL` should not include a `/v1` suffix — the plugin appends it.
 
+> **Upgrading from a pre-0.2 build?** The provider id changed from `lms` to `lmstudio`. Rename the `provider.lms` config key to `provider.lmstudio`, update any `"model": "lms/…"` reference to `"lmstudio/…"`, and drop the old `"disabled_providers": ["lmstudio"]` line.
+
 ## Options
 
-Under `provider.lms.options`:
+Under `provider.lmstudio.options`:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
@@ -54,7 +55,7 @@ Under `provider.lms.options`:
 
 ## Model overrides
 
-Override per-model metadata under `provider.lms.models[<id>]`:
+Override per-model metadata under `provider.lmstudio.models[<id>]`:
 
 ```jsonc
 "models": {
