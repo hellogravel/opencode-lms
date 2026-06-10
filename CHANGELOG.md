@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-06-10
+
+### Fixed
+
+- **Catalog-independent fallback.** 0.2.0 delivered models solely through the
+  `provider.models` hook, which OpenCode only fires for a provider already in
+  the models.dev catalog. Since the `lmstudio` catalog entry is proposed for
+  removal upstream ([anomalyco/models.dev#794](https://github.com/anomalyco/models.dev/pull/794)),
+  the plugin now also emits the full model list in the config-entry shape. If
+  `lmstudio` is dropped from the catalog, the hook stops firing but the config
+  fallback still registers every discovered model (verified end-to-end against
+  OpenCode 1.16.2 with `lmstudio` removed from the catalog). Reasoning-variant
+  suppression is preserved on both paths.
+
 ## [0.2.0] - 2026-06-10
 
 ### Changed (breaking)

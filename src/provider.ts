@@ -43,20 +43,12 @@ export async function resolveProviderConfig(
   return config;
 }
 
-/**
- * Per-model overrides we inject into `config.provider.lmstudio.models`.
- * Currently only used to disable variants the user (or our suppression logic)
- * doesn't want — see the note in `buildProvider`.
- */
-type ModelConfigOverride = { variants: Record<string, { disabled?: boolean }> };
-
 export interface BuiltProvider {
   /**
-   * The value to assign to `config.provider.lmstudio`. Its job is to *enable*
-   * the provider (a models.dev catalog provider only shows up once a config /
-   * env / auth entry promotes it) and to carry the small set of per-model
-   * variant overrides. The model list itself is delivered separately via the
-   * `provider.models` hook — that's `models` below.
+   * The value to assign to `config.provider.lmstudio`. It *enables* the
+   * provider (a catalog provider only shows up once a config/env/auth entry
+   * promotes it) and carries the full model list in OpenCode's config-dict
+   * shape — see the catalog-independence note on `buildProvider`.
    */
   providerEntry: Record<string, unknown>;
   /** The ModelV2 map returned from the `provider.models` hook. */
@@ -71,15 +63,24 @@ export interface BuiltProvider {
  * Resolve config, health-check the server, discover models, and shape the
  * results for OpenCode's v2 provider system.
  *
- * Why models live in the hook but suppression lives in the config entry:
- * OpenCode auto-generates low/medium/high reasoning_effort variants for any
- * reasoning-capable @ai-sdk/openai-compatible model whose variants come back
- * empty (provider.ts:1576 → transform.ts variants()). The `provider.models`
- * hook can't pre-empt that — returning empty variants triggers the auto-gen,
- * and returning `{low:{disabled:true}}` isn't filtered on the hook path. The
- * one place the disabled-variant filter *does* run is the config-merge path
- * (provider.ts:1580-1587), so suppression entries go into `providerEntry`
- * while the rich model definitions go through the hook.
+ * We deliver the same discovered models two ways on purpose:
+ *
+ *   1. `models` (ModelV2) via the `provider.models` hook — the clean, primary
+ *      path. But it only fires for a provider already in the models.dev
+ *      catalog (`if (!provider) continue`), and that catalog entry is actively
+ *      proposed for removal (anomalyco/models.dev#794).
+ *   2. `providerEntry.models` (config-dict shape) via the config entry — the
+ *      fallback. The config-merge path builds models even when the provider
+ *      isn't in the catalog, so the plugin keeps working if `lmstudio` is
+ *      dropped from models.dev. When the catalog entry *is* present, the hook
+ *      and the config rebuild describe the same models, so there's no conflict.
+ *
+ * Reasoning-variant suppression rides in `providerEntry.models[*].variants`:
+ * OpenCode auto-generates low/medium/high effort variants for reasoning models
+ * whose variants come back empty (provider.ts:1576 → transform.ts variants()),
+ * and the only place it filters `disabled` variants is the config-merge path
+ * (provider.ts:1580-1587). So suppression has to live in the config entry, not
+ * the hook — which the config-dict models already carry.
  */
 export async function buildProvider(
   userConfig: LMSProviderConfig | null | undefined,
@@ -120,24 +121,45 @@ export async function buildProvider(
   const mapped = discoverAndMapModels(discovered, config.models);
 
   const models: Record<string, ModelV2> = {};
-  const overrides: Record<string, ModelConfigOverride> = {};
+  const configModels: Record<string, Record<string, unknown>> = {};
   for (const [key, model] of Object.entries(mapped)) {
     models[key] = mappedToModelV2(model, config.baseURL!);
-    // Any variants we computed (suppression of meaningless effort levels, or
-    // user-supplied overrides) ride along in the config entry, not the hook.
-    if (model.variants && Object.keys(model.variants).length > 0) {
-      overrides[key] = { variants: model.variants };
-    }
+    configModels[key] = mappedToConfigModel(model);
   }
 
   return {
-    providerEntry: { name: config.name, options, models: overrides },
+    providerEntry: { name: config.name, options, models: configModels },
     models,
     health,
     client,
     lifecycle,
     resolvedBaseURL: config.baseURL!,
   };
+}
+
+/**
+ * Project a MappedModelConfig into OpenCode's config-dict model shape (the
+ * `config.provider.<id>.models[*]` form). This is the catalog-independent
+ * fallback. OpenCode's config parser rejects `interleaved: false` and bare
+ * `undefined`, so the key is omitted unless we have a positive value; same for
+ * `variants`.
+ */
+function mappedToConfigModel(m: MappedModelConfig): Record<string, unknown> {
+  const entry: Record<string, unknown> = {
+    id: m.id,
+    name: m.name,
+    family: m.family,
+    temperature: m.temperature,
+    reasoning: m.reasoning,
+    attachment: m.attachment,
+    tool_call: m.tool_call,
+    cost: m.cost,
+    modalities: m.modalities,
+    limit: m.limit,
+  };
+  if (m.interleaved) entry.interleaved = m.interleaved;
+  if (m.variants) entry.variants = m.variants;
+  return entry;
 }
 
 /**

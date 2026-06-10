@@ -98,9 +98,22 @@ describe("buildProvider", () => {
       capabilities: { reasoning: true, toolcall: true, attachment: true },
     });
     // baseURL gets the /v1 suffix the OpenAI-style SDK expects.
-    const entry = result.providerEntry as { options: { baseURL: string; apiKey: string } };
+    const entry = result.providerEntry as {
+      options: { baseURL: string; apiKey: string };
+      models: Record<string, Record<string, unknown>>;
+    };
     expect(entry.options.baseURL).toBe("http://host:1234/v1");
     expect(entry.options.apiKey).toBe("lm-studio"); // default placeholder when none provided
+    // Catalog-independent fallback: the config entry also carries the full
+    // model in config-dict shape, so the provider works even if `lmstudio` is
+    // dropped from the models.dev catalog and the provider.models hook can't fire.
+    expect(entry.models["google/gemma-4-e4b"]).toMatchObject({
+      id: "google/gemma-4-e4b",
+      name: "Gemma 4 E4B",
+      reasoning: true,
+      tool_call: true,
+      interleaved: { field: "reasoning_content" },
+    });
   });
 
   it("propagates user apiKey into the provider entry", async () => {
