@@ -90,8 +90,13 @@ export async function buildProvider(
   const options = {
     baseURL: `${config.baseURL}/v1`,
     apiKey: config.apiKey || "lm-studio",
-    timeout: 600000,
-    chunkTimeout: 120000,
+    // Overall request timeout. Default 10 min.
+    timeout: config.timeout ?? 600000,
+    // Inter-chunk (time-to-next-token) timeout. Default 2 min. SWA models
+    // (e.g. Gemma) reprocess the whole prompt every turn with no SSE chunks
+    // emitted during prompt processing, so a large prompt can blow past this
+    // before the first token and retry-loop forever — raise it for those.
+    chunkTimeout: config.chunkTimeout ?? 120000,
   };
 
   // Validate server health

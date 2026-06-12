@@ -48,6 +48,8 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
       autoDownload: pick<boolean>("autoDownload"),
       loadTimeout: pick<number>("loadTimeout"),
       downloadTimeout: pick<number>("downloadTimeout"),
+      timeout: pick<number>("timeout"),
+      chunkTimeout: pick<number>("chunkTimeout"),
       models: (raw.models as LMSProviderConfig["models"]) ?? (options.models as LMSProviderConfig["models"]),
     };
   }

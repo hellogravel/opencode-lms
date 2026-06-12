@@ -52,6 +52,10 @@ Under `provider.lmstudio.options`:
 | `autoDownload` | `boolean` | `false` | Download a missing model on first reference (off by default — a typo could trigger a multi-GB download) |
 | `loadTimeout` | `number` | `600000` | Load/unload timeout in ms |
 | `downloadTimeout` | `number` | `1800000` | Download timeout in ms |
+| `timeout` | `number` | `600000` | Overall chat-completion request timeout in ms |
+| `chunkTimeout` | `number` | `120000` | Inter-chunk (time-to-next-token) timeout in ms — raise for SWA models (see note) |
+
+> **SWA models (e.g. Gemma) and `chunkTimeout`:** llama.cpp can't reuse the prompt cache for sliding-window-attention models, so every turn reprocesses the *entire* prompt from scratch. No streamed chunks are emitted during that prompt-processing phase, so a large prompt can exceed `chunkTimeout` before the first token — the request aborts and retries, reprocessing from 0% again, looping indefinitely. If you see prompt processing restart from 0% repeatedly, raise `chunkTimeout` (e.g. to match `timeout`) and/or shrink the prompt by disabling unused tools/MCP servers.
 
 ## Model overrides
 

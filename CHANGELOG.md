@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-06-11
+
+### Added
+
+- **Configurable `timeout` and `chunkTimeout`.** Both were previously hardcoded
+  (`600000` / `120000` ms) and unreachable from user config. They now flow
+  through `provider.lmstudio.options` like the other timeouts. Defaults are
+  unchanged.
+
+### Fixed
+
+- **SWA prompt-reprocessing retry loop.** Sliding-window-attention models
+  (e.g. Gemma) can't reuse llama.cpp's prompt cache, so every turn reprocesses
+  the entire prompt from scratch. No SSE chunks are emitted during that
+  prompt-processing phase, so a large prompt could exceed the 2-minute
+  `chunkTimeout` before the first token — aborting and retrying, reprocessing
+  from 0% again, looping indefinitely. Raising `chunkTimeout` (e.g. to match
+  `timeout`) now lets prompt processing finish. See the README note for the
+  full explanation and mitigation.
+
 ## [0.2.1] - 2026-06-10
 
 ### Fixed

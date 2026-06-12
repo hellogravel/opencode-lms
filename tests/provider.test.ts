@@ -54,6 +54,26 @@ describe("buildProvider", () => {
     expect(entry.models).toEqual({});
   });
 
+  it("defaults timeout and chunkTimeout when not configured", async () => {
+    installFetchMock(() => ({ ok: false, status: 0 }));
+    const result = await buildProvider({ baseURL: "http://unreachable:1234" });
+    const entry = result.providerEntry as { options: { timeout: number; chunkTimeout: number } };
+    expect(entry.options.timeout).toBe(600000);
+    expect(entry.options.chunkTimeout).toBe(120000);
+  });
+
+  it("honors user-configured timeout and chunkTimeout overrides", async () => {
+    installFetchMock(() => ({ ok: false, status: 0 }));
+    const result = await buildProvider({
+      baseURL: "http://unreachable:1234",
+      timeout: 1_800_000,
+      chunkTimeout: 600_000,
+    });
+    const entry = result.providerEntry as { options: { timeout: number; chunkTimeout: number } };
+    expect(entry.options.timeout).toBe(1_800_000);
+    expect(entry.options.chunkTimeout).toBe(600_000);
+  });
+
   it("discovers models and returns them in ModelV2 shape via the hook map", async () => {
     installFetchMock((url) => {
       if (url.endsWith("/api/v1/models")) {

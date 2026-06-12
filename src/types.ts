@@ -272,6 +272,23 @@ export interface LMSProviderConfig {
   loadTimeout?: number;
   /** Override timeout for download operations in ms. Default 1800000 (30 min). */
   downloadTimeout?: number;
+  /**
+   * Overall request timeout for chat completions in ms, passed to the
+   * underlying provider. Default 600000 (10 min).
+   */
+  timeout?: number;
+  /**
+   * Inter-chunk (time-to-next-token) timeout for streamed chat completions in
+   * ms, passed to the underlying provider. Default 120000 (2 min).
+   *
+   * NOTE for sliding-window-attention models (e.g. Gemma): llama.cpp can't
+   * reuse the prompt cache for SWA, so every turn reprocesses the full prompt
+   * from scratch. No SSE chunks are emitted during that prompt-processing
+   * phase, so a large prompt can exceed this timeout before the first token,
+   * causing the request to abort and retry in a loop. Raise this (or match it
+   * to `timeout`) if you see prompt processing restart from 0% repeatedly.
+   */
+  chunkTimeout?: number;
 }
 
 export interface LMSModelOverride {
