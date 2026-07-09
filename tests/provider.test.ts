@@ -186,12 +186,14 @@ describe("buildProvider", () => {
         temperature: true,
         reasoning: false,
         attachment: false,
-        toolcall: false,
+        // Tools always advertised on for discovered LLMs (Phase 3).
+        toolcall: true,
         // ModelV2 accepts a plain boolean here — no more omit-or-reject dance.
         interleaved: false,
       },
       cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
-      limit: { context: 4096, output: 4096 },
+      // Loaded instance context = 4096; output = floor(4096/4) = 1024.
+      limit: { context: 4096, output: 1024 },
     });
   });
 

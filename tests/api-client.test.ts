@@ -209,6 +209,17 @@ describe("LMSClient.streamChat", () => {
     expect(body.context_length).toBe(4096);
   });
 
+  it("never sends a ttl key on the native chat body (LM Studio 0.4.19 rejects it)", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return { ok: true, status: 200, body: new ReadableStream() } as unknown as Response;
+    });
+    const client = new LMSClient({ baseURL: "http://localhost:1234" });
+    await client.streamChat("m", [{ type: "text", content: "ping" }], { context_length: 4096 });
+    expect(JSON.parse(calls[0].init.body as string)).not.toHaveProperty("ttl");
+  });
+
   it("passes the caller's AbortSignal to fetch", async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
@@ -260,6 +271,20 @@ describe("LMSClient.loadModel / unloadModel / downloadModel", () => {
 
     const body = JSON.parse(calls[0].init.body as string);
     expect(body).toEqual({ model: "model-x", context_length: 8192, echo_load_config: true });
+  });
+
+  it("never sends a ttl key on the load body (LM Studio 0.4.19 rejects it)", async () => {
+    const { calls } = installFetchMock([
+      {
+        url: /\/api\/v1\/models\/load$/,
+        ok: true,
+        status: 200,
+        body: { instance_id: "inst-1", type: "llm", load_time_seconds: 1, status: "loaded" },
+      },
+    ]);
+    const client = new LMSClient({ baseURL: "http://localhost:1234" });
+    await client.loadModel("model-x", { context_length: 8192 });
+    expect(JSON.parse(calls[0].init.body as string)).not.toHaveProperty("ttl");
   });
 
   it("POSTs to /api/v1/models/unload with instance_id", async () => {

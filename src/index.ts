@@ -1,6 +1,7 @@
-import type { Plugin, PluginInput, Hooks } from "@opencode-ai/plugin";
+import type { Plugin, PluginInput, PluginModule, Hooks } from "@opencode-ai/plugin";
 import type { LMSModelInfo, LMSProviderConfig, ModelV2 } from "./types.js";
 import { buildProvider } from "./provider.js";
+import { applyCompletionTtl } from "./ttl.js";
 import type { ModelLifecycle } from "./model-lifecycle.js";
 import {
   isModelLoadStart,
@@ -13,6 +14,10 @@ import {
 // to fire (OpenCode skips the hook for providers not in that catalog).
 const PROVIDER_ID = "lmstudio";
 
+// Default idle TTL (seconds) applied to each completion so LM Studio auto-evicts
+// the model after this many idle seconds. `0` = resident (no ttl sent).
+const DEFAULT_TTL_SECONDS = 3600;
+
 export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => {
   console.log("[opencode-lms] LM Studio plugin initialized");
 
@@ -21,6 +26,9 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
   let disableAutoLoad = false;
   let autoDownload = false;
   let downloadTimeout: number | undefined;
+  // Idle TTL (seconds) applied to each completion; `0` = resident. Resolved in
+  // the `config` hook, consumed in `chat.params`.
+  let ttlSeconds: number = DEFAULT_TTL_SECONDS;
   // Populated by the `config` hook (which runs first) and handed back to
   // OpenCode by the `provider.models` hook.
   let discoveredModels: Record<string, ModelV2> = {};
@@ -50,6 +58,8 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
       downloadTimeout: pick<number>("downloadTimeout"),
       timeout: pick<number>("timeout"),
       chunkTimeout: pick<number>("chunkTimeout"),
+      contextLength: pick<number>("contextLength"),
+      ttl: pick<number>("ttl"),
       models: (raw.models as LMSProviderConfig["models"]) ?? (options.models as LMSProviderConfig["models"]),
     };
   }
@@ -127,6 +137,8 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
       disableAutoLoad = Boolean(userConfig?.disableAutoLoad);
       autoDownload = Boolean(userConfig?.autoDownload);
       downloadTimeout = userConfig?.downloadTimeout;
+      // `?? default` keeps an explicit `0` (resident) distinct from "unset".
+      ttlSeconds = userConfig?.ttl ?? DEFAULT_TTL_SECONDS;
 
       // Writing the provider entry is what *enables* the provider — a
       // models.dev catalog provider stays hidden until a config/env/auth entry
@@ -156,9 +168,10 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
       const providerID = input?.provider?.info?.id;
       if (providerID !== PROVIDER_ID) return;
 
-      // Always run the reasoning-effort demotion — it's independent of
-      // whether discovery is healthy and shouldn't be gated by it.
+      // Always run the reasoning-effort demotion and TTL injection — both are
+      // independent of whether discovery is healthy and shouldn't be gated by it.
       demoteUnsupportedReasoningEffort(output);
+      applyCompletionTtl(output, ttlSeconds);
 
       if (!lifecycle || !resolvedBaseURL) return;
 
@@ -210,4 +223,9 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
   };
 };
 
-export default LMSPlugin;
+// v1 plugin-module shape: OpenCode reads only `default` when it's an object
+// with id/server keys, ignoring named exports — which immunizes the entry
+// module against the legacy loader treating every function export as a plugin.
+// `id` is required for file-path plugins.
+export default { id: "opencode-lms", server: LMSPlugin } satisfies PluginModule;
+

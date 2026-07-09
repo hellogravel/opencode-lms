@@ -289,6 +289,23 @@ export interface LMSProviderConfig {
    * to `timeout`) if you see prompt processing restart from 0% repeatedly.
    */
   chunkTimeout?: number;
+  /**
+   * Global default cap for the context window a model is *loaded* with (the
+   * VRAM knob — distinct from the UI-facing `limit.context`). LM Studio would
+   * otherwise load at each model's `max_context_length`, which can dominate
+   * VRAM on large-window models. Default 8192. A model whose max is below this
+   * loads at its max; a per-model `contextLength` override can raise toward max.
+   */
+  contextLength?: number;
+  /**
+   * Idle time-to-live in seconds applied to each chat completion. LM Studio
+   * resets the countdown on every request, so a model stays resident under
+   * active use and auto-evicts only after `ttl` idle seconds — freeing VRAM
+   * without a client-side unload loop. Sent on the OpenAI-compat completion
+   * path (LM Studio's REST load/chat endpoints reject a `ttl` key). Default
+   * 3600 (1h). `0` = resident (no `ttl` sent).
+   */
+  ttl?: number;
 }
 
 export interface LMSModelOverride {
@@ -308,6 +325,13 @@ export interface LMSModelOverride {
   };
   variants?: Record<string, { disabled?: boolean }>;
   options?: Record<string, unknown>;
+  /**
+   * Per-model load-time context window (the VRAM knob). Overrides the global
+   * `contextLength` cap for this model only; still clamped to the model's
+   * `max_context_length`. Distinct from `limit.context`, which is UI metadata
+   * and never sent to LM Studio.
+   */
+  contextLength?: number;
 }
 
 // ─── Internal state types ───
@@ -377,8 +401,8 @@ export interface MappedModelConfig {
   /**
    * Keyed by variant id. Each value carries per-variant flags. `disabled: true`
    * tells OpenCode to filter the variant out at parse time. Shape matches
-   * OpenCode's schema at provider.ts:1023:
-   *   variants: Record<string, Record<string, any>>
+   * OpenCode's variant schema — a `Record<string, Record<string, any>>` map of
+   * variant id to an open bag of per-variant flags.
    */
   variants?: Record<string, { disabled?: boolean }>;
   isLoaded: boolean;

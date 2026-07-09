@@ -1,7 +1,7 @@
 import { LMSClient } from "./api-client.js";
 import type { LMSProviderConfig, MappedModelConfig, HealthCheckResult, ModelV2 } from "./types.js";
 import { discoverAndMapModels } from "./model-discovery.js";
-import { ModelLifecycle } from "./model-lifecycle.js";
+import { ModelLifecycle, type ModelLoadPolicy } from "./model-lifecycle.js";
 import { detectLMStudio, validateServer } from "./health.js";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:1234";
@@ -43,6 +43,28 @@ export async function resolveProviderConfig(
   return config;
 }
 
+/**
+ * Distill the load-time policy (VRAM/eviction knobs) from provider config.
+ * The global `contextLength` cap plus any per-model `contextLength` overrides
+ * are threaded into the lifecycle — the single seam that carries load-time
+ * knobs to the model-load sites. Distinct from the UI-facing `limit.context`.
+ */
+function buildLoadPolicy(config: LMSProviderConfig): ModelLoadPolicy {
+  const perModel: Record<string, { contextLength?: number }> = {};
+  for (const override of Object.values(config.models ?? {})) {
+    // Key by the override's `id` — the model key LM Studio knows it as, which
+    // is what `ensureModelLoaded` matches against (modelInfo.key). The config
+    // map key is the user's alias and may differ.
+    if (override.contextLength !== undefined) {
+      perModel[override.id] = { contextLength: override.contextLength };
+    }
+  }
+  return {
+    contextLength: config.contextLength,
+    perModel: Object.keys(perModel).length > 0 ? perModel : undefined,
+  };
+}
+
 export interface BuiltProvider {
   /**
    * The value to assign to `config.provider.lmstudio`. It *enables* the
@@ -76,10 +98,10 @@ export interface BuiltProvider {
  *      and the config rebuild describe the same models, so there's no conflict.
  *
  * Reasoning-variant suppression rides in `providerEntry.models[*].variants`:
- * OpenCode auto-generates low/medium/high effort variants for reasoning models
- * whose variants come back empty (provider.ts:1576 → transform.ts variants()),
- * and the only place it filters `disabled` variants is the config-merge path
- * (provider.ts:1580-1587). So suppression has to live in the config entry, not
+ * OpenCode auto-generates low/medium/high effort variants for any reasoning
+ * model whose `variants` come back empty, and it only honors `disabled` variant
+ * entries on the config-merge path — the `provider.models` hook return is not
+ * run through that filter. So suppression has to live in the config entry, not
  * the hook — which the config-dict models already carry.
  */
 export async function buildProvider(
@@ -121,7 +143,7 @@ export async function buildProvider(
   }
 
   const client = new LMSClient({ baseURL: config.baseURL!, apiKey: config.apiKey });
-  const lifecycle = new ModelLifecycle(client);
+  const lifecycle = new ModelLifecycle(client, buildLoadPolicy(config));
   const discovered = await lifecycle.getAvailableModels(config.baseURL!);
   const mapped = discoverAndMapModels(discovered, config.models);
 

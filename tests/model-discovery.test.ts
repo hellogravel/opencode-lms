@@ -3,6 +3,7 @@ import {
   discoverAndMapModels,
   formatModelName,
   categorizeModel,
+  groupModelsByToolUse,
 } from "../src/model-discovery.js";
 import type { LMSModelInfo } from "../src/types.js";
 
@@ -36,10 +37,12 @@ describe("discoverAndMapModels", () => {
       temperature: true,
       reasoning: false,
       attachment: false,
-      tool_call: false,
+      // Tools are always advertised on for discovered LLMs (Phase 3).
+      tool_call: true,
       cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
       modalities: { input: ["text"], output: ["text"] },
-      limit: { context: 8192, output: 8192 },
+      // Cold model: context = max; output = min(floor(8192/4), 8192) = 2048.
+      limit: { context: 8192, output: 2048 },
       isLoaded: false,
       quantization: "Q4_K_M",
       format: "gguf",
@@ -122,12 +125,66 @@ describe("discoverAndMapModels", () => {
     expect(result["test/model-1"].reasoning).toBe(true);
   });
 
-  it("marks tool_call: true when trained_for_tool_use", () => {
-    const result = discoverAndMapModels(
-      [llmModel({ capabilities: { vision: false, trained_for_tool_use: true } })],
+  it("advertises tool_call: true regardless of trained_for_tool_use (Phase 3)", () => {
+    const withFlag = discoverAndMapModels(
+      [llmModel({ key: "a", capabilities: { vision: false, trained_for_tool_use: true } })],
       undefined,
     );
-    expect(result["test/model-1"].tool_call).toBe(true);
+    const withoutFlag = discoverAndMapModels(
+      [llmModel({ key: "b", capabilities: { vision: false, trained_for_tool_use: false } })],
+      undefined,
+    );
+    expect(withFlag["a"].tool_call).toBe(true);
+    expect(withoutFlag["b"].tool_call).toBe(true);
+  });
+
+  it("limit.context reflects the smallest loaded instance; output is context/4 capped 8192", () => {
+    const result = discoverAndMapModels(
+      [
+        llmModel({
+          key: "multi",
+          max_context_length: 131072,
+          loaded_instances: [
+            { id: "i1", config: { context_length: 32768 } },
+            { id: "i2", config: { context_length: 16384 } },
+          ],
+        }),
+      ],
+      undefined,
+    );
+    // min active context = 16384; output = floor(16384/4) = 4096.
+    expect(result["multi"].limit).toEqual({ context: 16384, output: 4096 });
+  });
+
+  it("a cold model advertises its full max_context_length, output capped at 8192", () => {
+    const result = discoverAndMapModels(
+      [llmModel({ key: "cold", max_context_length: 131072 })],
+      undefined,
+    );
+    // cold → context = max = 131072; output = min(floor(131072/4), 8192) = 8192.
+    expect(result["cold"].limit).toEqual({ context: 131072, output: 8192 });
+  });
+
+  it("a user limit.output override wins over the reserve formula", () => {
+    const result = discoverAndMapModels(
+      [llmModel({ key: "over", max_context_length: 131072 })],
+      { over: { id: "over", name: "Over", limit: { context: 131072, output: 512 } } },
+    );
+    expect(result["over"].limit).toEqual({ context: 131072, output: 512 });
+  });
+
+  it("groupModelsByToolUse buckets models by their reported tool-use signal", () => {
+    const buckets = groupModelsByToolUse([
+      llmModel({ key: "native-1", capabilities: { vision: false, trained_for_tool_use: true } }),
+      llmModel({ key: "default-1", capabilities: { vision: false, trained_for_tool_use: false } }),
+      llmModel({ key: "unknown-1", capabilities: undefined }),
+      llmModel({ key: "embed-1", type: "embedding", capabilities: undefined as never }),
+    ]);
+    expect(buckets).toEqual({
+      native: ["native-1"],
+      default: ["default-1"],
+      unknown: ["unknown-1"],
+    });
   });
 
   it("flags isLoaded with the first loaded_instances entry", () => {

@@ -9,7 +9,6 @@ function mapSingleModel(model: LMSModelInfo): MappedModelConfig {
   const isEmbedding = model.type === "embedding";
   const hasReasoning = Boolean(model.capabilities?.reasoning);
   const hasVision = Boolean(model.capabilities?.vision);
-  const hasToolUse = Boolean(model.capabilities?.trained_for_tool_use);
 
   // OpenCode auto-generates reasoning_effort variants (low/medium/high) for
   // any reasoning-capable model on @ai-sdk/openai-compatible. For LMS models
@@ -37,6 +36,21 @@ function mapSingleModel(model: LMSModelInfo): MappedModelConfig {
     modalities = { input: inputMods, output: ["text"] };
   }
 
+  // limit.context (UI metadata, not the load-time VRAM knob): for a loaded
+  // model, reflect the smallest active instance's context so the UI never
+  // promises more than what's actually loaded; for a cold (JIT-loadable) model,
+  // advertise its full max_context_length. Always clamped to max.
+  const effectiveContext = isLoaded
+    ? Math.min(
+        ...model.loaded_instances.map((inst) => inst.config.context_length),
+        model.max_context_length,
+      )
+    : model.max_context_length;
+  // LMS has no separate output cap (output is bounded by remaining context).
+  // Reserve a quarter of the window for output, capped at 8192 — agustif's
+  // heuristic. A user `limit.output` override wins via the overrides path.
+  const outputReserve = Math.min(Math.floor(effectiveContext / 4), 8192);
+
   return {
     id: model.key,
     name: model.display_name || formatModelName(model.key),
@@ -46,7 +60,11 @@ function mapSingleModel(model: LMSModelInfo): MappedModelConfig {
     reasoning: hasReasoning,
     // Vision-capable models accept image attachments alongside the message.
     attachment: hasVision,
-    tool_call: hasToolUse,
+    // Tools are always advertised as available for discovered LLMs. LMS's
+    // `trained_for_tool_use` flag is unreliable as a gate (many capable models
+    // report false), so we don't derive tool_call from it — it feeds discovery
+    // diagnostics only (see groupModelsByToolUse).
+    tool_call: true,
     // The key user-visible setting: tells OpenCode's renderer to interleave
     // the streaming `delta.reasoning_content` chunks the OpenAI-compat
     // endpoint already emits for reasoning-capable models. Without this set,
@@ -60,10 +78,8 @@ function mapSingleModel(model: LMSModelInfo): MappedModelConfig {
     cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
     modalities,
     // OpenCode's ProviderConfig schema requires both context and output when
-    // `limit` is present. LMS doesn't expose a separate output cap (output
-    // is bounded by remaining context), so default output to the full
-    // context window.
-    limit: { context: model.max_context_length, output: model.max_context_length },
+    // `limit` is present. See effectiveContext / outputReserve above.
+    limit: { context: effectiveContext, output: outputReserve },
     // Two reasons we touch variants:
     //   1) LMS file-level variants (e.g. @q4_0, @q8_0) are useless in the
     //      OpenCode picker — selecting one is a no-op since file changes
@@ -89,6 +105,33 @@ function mapSingleModel(model: LMSModelInfo): MappedModelConfig {
     format: model.format || undefined,
     size_bytes: model.size_bytes || undefined,
   };
+}
+
+/**
+ * Group discovered LLMs by what LM Studio reports about their tool-use training.
+ * Purely diagnostic — tool_call is always advertised as available (see
+ * mapSingleModel); this just surfaces LMS's `trained_for_tool_use` signal:
+ *   - native:  reports trained_for_tool_use === true
+ *   - default: reports trained_for_tool_use === false (still tools-on)
+ *   - unknown: no capabilities block, so LMS gave us no signal
+ */
+export function groupModelsByToolUse(discovered: LMSModelInfo[]): {
+  native: string[];
+  default: string[];
+  unknown: string[];
+} {
+  const buckets = { native: [] as string[], default: [] as string[], unknown: [] as string[] };
+  for (const model of discovered) {
+    if (model.type === "embedding") continue;
+    if (!model.capabilities) {
+      buckets.unknown.push(model.key);
+    } else if (model.capabilities.trained_for_tool_use) {
+      buckets.native.push(model.key);
+    } else {
+      buckets.default.push(model.key);
+    }
+  }
+  return buckets;
 }
 
 /**
@@ -152,6 +195,16 @@ export function discoverAndMapModels(
     // (e.g. "google/gemma-4-e4b"); rewriting those into underscores would
     // silently break user configs that reference the canonical key.
     result[model.key] = mapSingleModel(model);
+  }
+
+  // Diagnostics only: surface LMS's tool-use training signal without gating on
+  // it (tools are always advertised as available).
+  const toolUse = groupModelsByToolUse(discovered);
+  if (toolUse.native.length || toolUse.default.length || toolUse.unknown.length) {
+    console.log(
+      `[opencode-lms] tool-use signal — native: ${toolUse.native.length}, ` +
+        `default: ${toolUse.default.length}, unknown: ${toolUse.unknown.length}`,
+    );
   }
 
   return result;

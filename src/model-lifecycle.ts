@@ -5,6 +5,27 @@ import { parseSSEStream } from "./streaming.js";
 const DEFAULT_TTL = 15000; // 15 seconds
 const MAX_CACHE_SIZE = 50;
 
+// Default cap for the context window a model is loaded with. LM Studio would
+// otherwise load at each model's max_context_length; capping keeps VRAM in
+// check. A model whose max is below this loads at its max (see resolveContextLength).
+const DEFAULT_CONTEXT_LENGTH = 8192;
+
+/**
+ * Load-time knobs threaded from provider config into the lifecycle — the single
+ * seam that carries all VRAM policy to the model-load sites. Kept distinct from
+ * the UI-facing `limit.context`, which is never sent to LMS.
+ *
+ * NB: idle TTL is NOT threaded here. LM Studio's REST load/chat endpoints reject
+ * a `ttl` key; TTL is applied per-completion on the OpenAI-compat path (see
+ * applyCompletionTtl in ttl.ts), which is where OpenCode's inference goes.
+ */
+export interface ModelLoadPolicy {
+  /** Global default cap for the load-time context window. Default 8192. */
+  contextLength?: number;
+  /** Per-model load-time overrides, keyed by model key. */
+  perModel?: Record<string, { contextLength?: number }>;
+}
+
 interface CacheEntry {
   models: LMSModelInfo[];
   timestamp: number;
@@ -68,10 +89,26 @@ export class ModelStatusCache {
 export class ModelLifecycle {
   private client: LMSClient;
   private cache: ModelStatusCache;
+  private policy: ModelLoadPolicy;
 
-  constructor(client: LMSClient) {
+  constructor(client: LMSClient, policy: ModelLoadPolicy = {}) {
     this.client = client;
     this.cache = new ModelStatusCache();
+    this.policy = policy;
+  }
+
+  /**
+   * Resolve the load-time context window for a model: a per-model override
+   * wins, else the global cap (default 8192), always clamped to the model's
+   * own max_context_length. This is the VRAM knob, not the UI `limit.context`.
+   */
+  private resolveContextLength(modelInfo: LMSModelInfo): number {
+    const maxCtx = modelInfo.max_context_length;
+    const desired =
+      this.policy.perModel?.[modelInfo.key]?.contextLength ??
+      this.policy.contextLength ??
+      DEFAULT_CONTEXT_LENGTH;
+    return Math.min(desired, maxCtx);
   }
 
   /**
@@ -116,11 +153,15 @@ export class ModelLifecycle {
     );
     if (current && current.loaded_instances.length > 0) return;
 
+    // Resolve the load-time context window once (VRAM knob; capped at the
+    // model's own max), then use it at every load site below.
+    const ctx = this.resolveContextLength(modelInfo);
+
     // Embedding models can't be loaded via /api/v1/chat — that endpoint is
     // LLM-only and returns model_not_found. Use the synchronous load endpoint.
     if (modelInfo.type === "embedding") {
       await this.client.loadModel(modelInfo.key, {
-        context_length: modelInfo.max_context_length,
+        context_length: ctx,
         echo_load_config: true,
       });
       this.cache.invalidate(this.client.baseURLWithTrailingSlash);
@@ -134,7 +175,7 @@ export class ModelLifecycle {
         modelInfo.key,
         [{ type: "text", content: "ping" }],
         {
-          context_length: modelInfo.max_context_length,
+          context_length: ctx,
           signal: controller.signal,
         },
       );
@@ -164,7 +205,7 @@ export class ModelLifecycle {
       if (name !== "AbortError" && !streamLoaded) {
         // Fall back to the non-streaming load endpoint.
         await this.client.loadModel(modelInfo.key, {
-          context_length: modelInfo.max_context_length,
+          context_length: ctx,
           echo_load_config: true,
         });
         streamLoaded = true;
@@ -175,7 +216,11 @@ export class ModelLifecycle {
   }
 
   /**
-   * Unload a specific model instance.
+   * Unload a specific model instance. Intentionally un-wired: idle eviction is
+   * delegated to the per-completion `ttl` sent on the OpenAI-compat path (see
+   * applyCompletionTtl in ttl.ts / LMSProviderConfig.ttl), so the plugin never
+   * drives an unload loop. Kept as an explicit method for callers that want to
+   * force-evict.
    */
   async unloadModel(instanceId: string): Promise<void> {
     await this.client.unloadModel(instanceId);

@@ -69,7 +69,18 @@ docker compose exec opencode bash    # shell into the container
 docker compose down                  # stop, keep volumes
 docker compose down -v               # stop and wipe volumes
 docker compose build --no-cache      # rebuild from scratch
+./smoke.sh                           # loader smoke test: build + up, assert
+                                     # /config/providers 200s and lists lmstudio,
+                                     # then tear down
 ```
+
+`smoke.sh` is the loader-level regression guard: it catches breakage the
+fetch-stubbed unit suite can't (stray entry-module exports, plugin-module
+shape changes, OpenCode loader changes). The image installs the **latest**
+OpenCode, so re-running it after an OpenCode release doubles as the
+version-bump check. It needs a reachable LM Studio (key in `.env` if auth is
+on): a provider with zero discovered models is dropped from
+`/config/providers`, so the `lmstudio` assertion depends on discovery.
 
 The OpenCode server listens on `http://localhost:4096`. Use the
 password from `.env` to authenticate.
@@ -139,6 +150,7 @@ docker/
 ├── Dockerfile             # Single-stage Ubuntu + node + opencode + plugin build
 ├── docker-compose.yml     # additional_context resolves to '..' (the package root)
 ├── entrypoint.sh          # Writes opencode.jsonc from env vars on every start
+├── smoke.sh               # Loader smoke test (build + up + assert /config/providers)
 ├── .dockerignore
 ├── .env                   # local-only, gitignored at the repo root
 ├── .env.example           # template

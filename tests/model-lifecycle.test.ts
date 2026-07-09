@@ -294,3 +294,89 @@ describe("ModelLifecycle.ensureModelLoaded", () => {
     expect(opts.signal!.aborted).toBe(true);
   });
 });
+
+describe("ModelLifecycle context-length policy", () => {
+  // Stream the load to completion so ensureModelLoaded exercises the streamChat
+  // path (the primary load site). Returns the context_length streamChat saw.
+  async function loadAndCaptureStreamCtx(
+    model: LMSModelInfo,
+    policy?: ConstructorParameters<typeof ModelLifecycle>[1],
+  ): Promise<number | undefined> {
+    const client = makeStubClient({
+      getModels: vi.fn().mockResolvedValue([model]),
+      streamChat: vi.fn().mockResolvedValue(
+        sseStreamFromEvents([
+          { type: "model_load.end", model_instance_id: "inst-a", load_time_seconds: 0.3 },
+        ]),
+      ),
+      loadModel: vi.fn(),
+    });
+    const lifecycle = new ModelLifecycle(client, policy);
+    await lifecycle.ensureModelLoaded("http://stub", model);
+    const call = (client.streamChat as ReturnType<typeof vi.fn>).mock.calls[0];
+    return (call[2] as { context_length?: number }).context_length;
+  }
+
+  it("caps the load context at the 8192 default on a large-window model", async () => {
+    const big = fakeModel("big", { max_context_length: 131072 });
+    expect(await loadAndCaptureStreamCtx(big)).toBe(8192);
+  });
+
+  it("a per-model override raises the load context toward max", async () => {
+    const big = fakeModel("big", { max_context_length: 131072 });
+    const ctx = await loadAndCaptureStreamCtx(big, {
+      perModel: { big: { contextLength: 32768 } },
+    });
+    expect(ctx).toBe(32768);
+  });
+
+  it("a global contextLength override applies to all models", async () => {
+    const big = fakeModel("big", { max_context_length: 131072 });
+    expect(await loadAndCaptureStreamCtx(big, { contextLength: 16384 })).toBe(16384);
+  });
+
+  it("never exceeds the model's max_context_length, even when asked to", async () => {
+    const small = fakeModel("small", { max_context_length: 4096 });
+    // Global cap above the model max — must clamp down to max.
+    expect(await loadAndCaptureStreamCtx(small, { contextLength: 100000 })).toBe(4096);
+    // Per-model override above the model max — must also clamp.
+    const clamped = await loadAndCaptureStreamCtx(small, {
+      perModel: { small: { contextLength: 100000 } },
+    });
+    expect(clamped).toBe(4096);
+  });
+
+  it("a model whose max is below the 8192 default loads at its max", async () => {
+    const small = fakeModel("small", { max_context_length: 4096 });
+    expect(await loadAndCaptureStreamCtx(small)).toBe(4096);
+  });
+
+  it("applies the resolved context to the embedding synchronous-load path too", async () => {
+    const embed = fakeModel("embed", { type: "embedding", max_context_length: 131072 });
+    const client = makeStubClient({
+      getModels: vi.fn().mockResolvedValue([embed]),
+      loadModel: vi.fn().mockResolvedValue({ instance_id: "inst-x" }),
+      streamChat: vi.fn(),
+    });
+    const lifecycle = new ModelLifecycle(client);
+    await lifecycle.ensureModelLoaded("http://stub", embed);
+    expect(client.loadModel).toHaveBeenCalledWith("embed", expect.objectContaining({
+      context_length: 8192,
+    }));
+  });
+
+  it("applies the resolved context to the synchronous-load fallback", async () => {
+    const big = fakeModel("big", { max_context_length: 131072 });
+    const client = makeStubClient({
+      getModels: vi.fn().mockResolvedValue([big]),
+      streamChat: vi.fn().mockRejectedValue(new Error("connection refused")),
+      loadModel: vi.fn().mockResolvedValue({ instance_id: "inst-fallback" }),
+    });
+    const lifecycle = new ModelLifecycle(client, { contextLength: 16384 });
+    await lifecycle.ensureModelLoaded("http://stub", big);
+    expect(client.loadModel).toHaveBeenCalledWith("big", expect.objectContaining({
+      context_length: 16384,
+    }));
+  });
+});
+

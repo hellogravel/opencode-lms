@@ -208,6 +208,9 @@ export class LMSClient {
     } = {},
   ): Promise<LMSModelLoadResponse> {
     const url = buildURL(this.baseURL, "/api/v1/models/load");
+    // NB: LM Studio 0.4.19's /api/v1/models/load rejects a `ttl` key with HTTP
+    // 400 (Unrecognized key). TTL rides the OpenAI-compat completion instead
+    // (see applyCompletionTtl in ttl.ts), not the load body.
     const body: Record<string, unknown> = { model: modelKey };
     if (options.context_length) body.context_length = options.context_length;
     if (options.echo_load_config !== undefined) body.echo_load_config = options.echo_load_config;
@@ -295,6 +298,9 @@ export class LMSClient {
     } = {},
   ): Promise<ReadableStream<Uint8Array>> {
     const url = buildURL(this.baseURL, "/api/v1/chat");
+    // NB: this native /api/v1/chat endpoint also rejects a `ttl` key (HTTP 400,
+    // Unrecognized key on 0.4.19). TTL is applied on the OpenAI-compat
+    // completion path instead (applyCompletionTtl in ttl.ts).
     const body: Record<string, unknown> = {
       model,
       input,
