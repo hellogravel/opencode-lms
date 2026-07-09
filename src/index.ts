@@ -165,7 +165,15 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
     },
 
     "chat.params": async (input, output) => {
-      const providerID = input?.provider?.info?.id;
+      // OpenCode ≤1.16 passed a ProviderContext ({source, info, options});
+      // 1.17 passes Provider.Info directly (session/llm/request.ts triggers
+      // with `provider: input.provider`, and core reads `input.provider.id`).
+      // Read both shapes — the old guard silently no-op'd every chat.params
+      // behavior (TTL, reasoning demotion, auto-load) on 1.17.x.
+      const provider = input?.provider as
+        | { info?: { id?: string }; id?: string }
+        | undefined;
+      const providerID = provider?.info?.id ?? provider?.id;
       if (providerID !== PROVIDER_ID) return;
 
       // Always run the reasoning-effort demotion and TTL injection — both are

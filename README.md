@@ -61,7 +61,16 @@ Under `provider.lmstudio.options`:
 | `timeout` | `number` | `600000` | Overall chat-completion request timeout in ms |
 | `chunkTimeout` | `number` | `120000` | Inter-chunk (time-to-next-token) timeout in ms — raise for SWA models (see note) |
 | `contextLength` | `number` | `8192` | Global cap on the context window a model is *loaded* with (the VRAM knob). A model whose max is below this loads at its max; raise per-model with `models[<id>].contextLength`. Distinct from `limit.context` (UI metadata) |
-| `ttl` | `number` | `3600` | Idle seconds before a loaded model auto-evicts (frees VRAM), sent on each chat completion. The countdown resets on every request, so active models stay resident. `0` = resident (never auto-evict) |
+| `ttl` | `number` | `3600` | Idle seconds before a loaded model auto-evicts (frees VRAM), sent on each chat completion. The countdown resets on every request, so active models stay resident. `0` = resident (never auto-evict). **Reach is limited by LM Studio's API — see the TTL note below** |
+
+> **TTL vs auto-load (LM Studio ≤0.4.19):** LM Studio applies a request's `ttl`
+> only when that request JIT-loads the model; it ignores `ttl` on already-loaded
+> instances, and the REST load endpoint rejects a `ttl` key outright (HTTP 400).
+> Since this plugin auto-loads cold models via REST (to apply `contextLength`),
+> plugin-loaded models evict on **LM Studio's server-default idle TTL**, not
+> `options.ttl`. The configured `ttl` fully applies only when `disableAutoLoad`
+> is set (JIT loads — which also bypass the context cap). Verified live on
+> 0.4.19.
 
 > **SWA models (e.g. Gemma) and `chunkTimeout`:** llama.cpp can't reuse the prompt cache for sliding-window-attention models, so every turn reprocesses the *entire* prompt from scratch. No streamed chunks are emitted during that prompt-processing phase, so a large prompt can exceed `chunkTimeout` before the first token — the request aborts and retries, reprocessing from 0% again, looping indefinitely. If you see prompt processing restart from 0% repeatedly, raise `chunkTimeout` (e.g. to match `timeout`) and/or shrink the prompt by disabling unused tools/MCP servers.
 

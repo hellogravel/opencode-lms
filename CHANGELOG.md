@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`chat.params` was silently dead on OpenCode 1.17.x** — every behavior it
+  carries (per-completion `ttl` injection, reasoning-effort demotion, cold-model
+  auto-load) no-op'd. OpenCode ≤1.16 passed the hook a `ProviderContext`
+  (`{source, info, options}`); 1.17 passes `Provider.Info` directly, so the
+  `input.provider.info.id` gate read `undefined` and returned early — invisible
+  live (no logging on the early return) and invisible to tests (stubs used the
+  old shape). The gate now reads both shapes, with a hook-level regression test
+  driving each (`tests/chat-params-gate.test.ts`). Verified live on OpenCode
+  1.17.15: cold model auto-loads at the capped context (8192) with progress
+  logs.
+
+### Notes
+
+- **TTL reach on LM Studio ≤0.4.19 (verified live):** a completion's `ttl`
+  applies only when that completion JIT-loads the model; it is ignored for
+  already-loaded instances, and REST loads reject `ttl` (400). Because the
+  plugin auto-loads cold models via REST (to apply `contextLength`),
+  plugin-loaded models evict on LM Studio's *server-default* idle TTL rather
+  than `options.ttl`; the configured `ttl` fully governs only JIT loads
+  (`disableAutoLoad`). Documented in the README.
+
 ## [0.3.0] - 2026-07-09
 
 ### Added
