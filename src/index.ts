@@ -9,6 +9,7 @@ import {
   isModelLoadEnd,
   isError,
 } from "./streaming.js";
+import { log } from "./log.js";
 
 // Matches the models.dev catalog id — required for the `provider.models` hook
 // to fire (OpenCode skips the hook for providers not in that catalog).
@@ -19,7 +20,7 @@ const PROVIDER_ID = "lmstudio";
 const DEFAULT_TTL_SECONDS = 3600;
 
 export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => {
-  console.log("[opencode-lms] LM Studio plugin initialized");
+  log("[opencode-lms] LM Studio plugin initialized");
 
   let lifecycle: ModelLifecycle | null = null;
   let resolvedBaseURL: string | null = null;
@@ -94,7 +95,7 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
     demote(oai);
 
     if (demoted) {
-      console.log(
+      log(
         `[opencode-lms] Reasoning effort "max" demoted to "xhigh" ` +
           `(LM Studio's /v1/chat/completions accepts: none, minimal, low, medium, high, xhigh)`,
       );
@@ -103,19 +104,19 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
 
   async function ensureLoadedWithLogging(modelId: string, model: LMSModelInfo): Promise<void> {
     if (!lifecycle || !resolvedBaseURL) return;
-    console.log(`[opencode-lms] Auto-loading model ${modelId}`);
+    log(`[opencode-lms] Auto-loading model ${modelId}`);
     let lastReportedPct = -1;
     await lifecycle.ensureModelLoaded(resolvedBaseURL, model, (event) => {
       if (isModelLoadStart(event)) {
-        console.log(`[opencode-lms] Load started (${event.model_instance_id})`);
+        log(`[opencode-lms] Load started (${event.model_instance_id})`);
       } else if (isModelLoadProgress(event)) {
         const pct = Math.floor(event.progress * 100);
         if (pct >= lastReportedPct + 10) {
-          console.log(`[opencode-lms] Loading ${modelId}: ${pct}%`);
+          log(`[opencode-lms] Loading ${modelId}: ${pct}%`);
           lastReportedPct = pct;
         }
       } else if (isModelLoadEnd(event)) {
-        console.log(`[opencode-lms] Model loaded in ${event.load_time_seconds.toFixed(1)}s`);
+        log(`[opencode-lms] Model loaded in ${event.load_time_seconds.toFixed(1)}s`);
       } else if (isError(event)) {
         console.warn(`[opencode-lms] Stream error: ${event.error.message}`);
       }
@@ -148,7 +149,7 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
       cfg.provider[PROVIDER_ID] = built.providerEntry;
 
       if (built.health?.healthy) {
-        console.log(
+        log(
           `[opencode-lms] Discovered ${Object.keys(built.models).length} model(s) at ${resolvedBaseURL}` +
             (autoDownload ? " (autoDownload on)" : ""),
         );
@@ -194,22 +195,22 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
         if (!match) {
           if (!autoDownload) return; // Let the AI SDK surface its own error.
 
-          console.log(`[opencode-lms] Model ${modelId} not on disk — starting download`);
+          log(`[opencode-lms] Model ${modelId} not on disk — starting download`);
           let lastReportedPct = -1;
           await lifecycle.downloadModelAndWait(
             modelId,
             (status) => {
               const pct = status.progress != null ? Math.floor(status.progress * 100) : null;
               if (pct != null && pct >= lastReportedPct + 10) {
-                console.log(`[opencode-lms] Downloading ${modelId}: ${pct}% (${status.status})`);
+                log(`[opencode-lms] Downloading ${modelId}: ${pct}% (${status.status})`);
                 lastReportedPct = pct;
               } else if (pct == null) {
-                console.log(`[opencode-lms] Downloading ${modelId}: ${status.status}`);
+                log(`[opencode-lms] Downloading ${modelId}: ${status.status}`);
               }
             },
             { timeoutMs: downloadTimeout },
           );
-          console.log(`[opencode-lms] Download complete: ${modelId}`);
+          log(`[opencode-lms] Download complete: ${modelId}`);
 
           // Re-discover; the model should now be on disk
           models = await lifecycle.getAvailableModels(resolvedBaseURL);

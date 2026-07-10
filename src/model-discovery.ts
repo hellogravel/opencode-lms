@@ -1,4 +1,5 @@
 import type { LMSModelInfo, MappedModelConfig, LMSModelOverride } from "./types.js";
+import { log } from "./log.js";
 
 /**
  * Map a single LM Studio model to OpenCode model config format.
@@ -201,7 +202,7 @@ export function discoverAndMapModels(
   // it (tools are always advertised as available).
   const toolUse = groupModelsByToolUse(discovered);
   if (toolUse.native.length || toolUse.default.length || toolUse.unknown.length) {
-    console.log(
+    log(
       `[opencode-lms] tool-use signal — native: ${toolUse.native.length}, ` +
         `default: ${toolUse.default.length}, unknown: ${toolUse.unknown.length}`,
     );
