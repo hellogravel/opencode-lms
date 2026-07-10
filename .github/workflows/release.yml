@@ -3,6 +3,11 @@ name: Release
 # Fires when a v* tag is pushed. The tag's name must match the version in
 # package.json — the verify step bails out otherwise so the wrong version
 # can't accidentally ship.
+#
+# Auth is npm Trusted Publishing (OIDC): npmjs.com is configured to trust this
+# exact repo + workflow file, so no NPM_TOKEN secret exists anywhere. Requires
+# npm >= 11.5 (upgraded below; Node 22 bundles 10.x) and id-token: write.
+# Provenance attestation is automatic on the OIDC path.
 on:
   push:
     tags:
@@ -14,20 +19,23 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Required for npm provenance — the package will be signed with an
-      # attestation tying the tarball to this exact workflow run and commit.
+      # Required for the OIDC token exchange with npmjs.com (and provenance).
       id-token: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # No registry-url here on purpose: setup-node would write an .npmrc
+      # referencing $NODE_AUTH_TOKEN, which breaks the tokenless OIDC publish.
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
           cache: 'npm'
+
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
 
       - name: Install
         run: npm ci
@@ -51,6 +59,4 @@ jobs:
         run: npm run build
 
       - name: Publish to npm
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
