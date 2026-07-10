@@ -19,6 +19,11 @@ const PROVIDER_ID = "lmstudio";
 // the model after this many idle seconds. `0` = resident (no ttl sent).
 const DEFAULT_TTL_SECONDS = 3600;
 
+// Minimum gap between re-discovery attempts when LM Studio wasn't reachable at
+// config time. Keeps a down server from adding a health-check probe to every
+// chat request.
+const REDISCOVER_THROTTLE_MS = 30_000;
+
 export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => {
   log("[opencode-lms] LM Studio plugin initialized");
 
@@ -33,6 +38,46 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
   // Populated by the `config` hook (which runs first) and handed back to
   // OpenCode by the `provider.models` hook.
   let discoveredModels: Record<string, ModelV2> = {};
+  // Kept so a failed discovery can be retried later (see ensureProviderReady).
+  let savedUserConfig: LMSProviderConfig | null = null;
+  let lastRediscoverAt = 0;
+  let rediscoverInFlight: Promise<void> | null = null;
+
+  /** Adopt a healthy buildProvider result into the closure state. */
+  function adoptBuiltProvider(built: Awaited<ReturnType<typeof buildProvider>>): void {
+    lifecycle = built.lifecycle;
+    resolvedBaseURL = built.resolvedBaseURL;
+    discoveredModels = built.models;
+  }
+
+  /**
+   * Self-heal when LM Studio wasn't reachable at config time (e.g. OpenCode
+   * started first). Re-runs discovery, throttled and single-flight; on success
+   * the chat.params behaviors (auto-load, download) come alive and
+   * `provider.models` serves the discovered list. The provider *entry* written
+   * by the config hook is not revisited — OpenCode only re-reads config on
+   * reload — so model metadata in the picker may lag until then; auto-load
+   * works regardless because it needs only the lifecycle client.
+   */
+  function ensureProviderReady(): Promise<void> {
+    if (lifecycle && resolvedBaseURL) return Promise.resolve();
+    if (rediscoverInFlight) return rediscoverInFlight;
+    const now = Date.now();
+    if (now - lastRediscoverAt < REDISCOVER_THROTTLE_MS) return Promise.resolve();
+    lastRediscoverAt = now;
+    rediscoverInFlight = (async () => {
+      const built = await buildProvider(savedUserConfig);
+      if (!built.health?.healthy) return;
+      adoptBuiltProvider(built);
+      log(
+        `[opencode-lms] LM Studio became reachable — discovered ` +
+          `${Object.keys(built.models).length} model(s) at ${built.resolvedBaseURL}`,
+      );
+    })().finally(() => {
+      rediscoverInFlight = null;
+    });
+    return rediscoverInFlight;
+  }
 
   function normalizeBaseURL(url: string | undefined): string | undefined {
     if (!url) return undefined;
@@ -129,12 +174,11 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
       const userConfig: LMSProviderConfig | null = providers[PROVIDER_ID]
         ? readUserConfig(providers[PROVIDER_ID])
         : null;
+      savedUserConfig = userConfig;
 
       const built = await buildProvider(userConfig);
 
-      lifecycle = built.lifecycle;
-      resolvedBaseURL = built.resolvedBaseURL;
-      discoveredModels = built.models;
+      adoptBuiltProvider(built);
       disableAutoLoad = Boolean(userConfig?.disableAutoLoad);
       autoDownload = Boolean(userConfig?.autoDownload);
       downloadTimeout = userConfig?.downloadTimeout;
@@ -161,8 +205,13 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
     provider: {
       id: PROVIDER_ID,
       // OpenCode runs the `config` hook before building provider state, so
-      // `discoveredModels` is already populated by the time this fires.
-      models: async () => discoveredModels,
+      // `discoveredModels` is normally populated by the time this fires. If
+      // the server was down at config time, give discovery one more chance
+      // here (throttled) so a late-starting LM Studio still surfaces models.
+      models: async () => {
+        if (!lifecycle) await ensureProviderReady();
+        return discoveredModels;
+      },
     },
 
     "chat.params": async (input, output) => {
@@ -182,7 +231,12 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
       demoteUnsupportedReasoningEffort(output);
       applyCompletionTtl(output, ttlSeconds);
 
-      if (!lifecycle || !resolvedBaseURL) return;
+      // Server down at config time? Retry discovery (throttled) before giving
+      // up on the load/download behaviors for this request.
+      if (!lifecycle || !resolvedBaseURL) {
+        await ensureProviderReady();
+        if (!lifecycle || !resolvedBaseURL) return;
+      }
 
       const modelId = input?.model?.id;
       if (!modelId) return;

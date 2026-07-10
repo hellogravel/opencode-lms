@@ -214,6 +214,59 @@ describe("ModelLifecycle.ensureModelLoaded", () => {
     expect(client.loadModel).not.toHaveBeenCalled();
   });
 
+  it("concurrent calls for the same model share a single load (single-flight)", async () => {
+    const llm = fakeModel("llm-1");
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const client = makeStubClient({
+      getModels: vi.fn().mockResolvedValue([llm]),
+      streamChat: vi.fn().mockImplementation(async () => {
+        await gate;
+        return sseStreamFromEvents([
+          { type: "model_load.end", model_instance_id: "inst-a", load_time_seconds: 0.1 },
+        ]);
+      }),
+      loadModel: vi.fn(),
+    });
+    const lifecycle = new ModelLifecycle(client);
+
+    // Both calls join before the load resolves — e.g. two headless kanban
+    // sessions dispatched at once, both inside the status cache's TTL.
+    const first = lifecycle.ensureModelLoaded("http://stub", llm);
+    const second = lifecycle.ensureModelLoaded("http://stub", llm);
+    release();
+    await Promise.all([first, second]);
+
+    expect(client.streamChat).toHaveBeenCalledTimes(1);
+
+    // The key is released after completion — a later call loads again
+    // (getModels still reports the model unloaded in this stub).
+    await lifecycle.ensureModelLoaded("http://stub", llm);
+    expect(client.streamChat).toHaveBeenCalledTimes(2);
+  });
+
+  it("concurrent calls for different models load independently", async () => {
+    const a = fakeModel("model-a");
+    const b = fakeModel("model-b");
+    const client = makeStubClient({
+      getModels: vi.fn().mockResolvedValue([a, b]),
+      streamChat: vi.fn().mockImplementation(async () =>
+        sseStreamFromEvents([
+          { type: "model_load.end", model_instance_id: "inst", load_time_seconds: 0.1 },
+        ]),
+      ),
+      loadModel: vi.fn(),
+    });
+    const lifecycle = new ModelLifecycle(client);
+
+    await Promise.all([
+      lifecycle.ensureModelLoaded("http://stub", a),
+      lifecycle.ensureModelLoaded("http://stub", b),
+    ]);
+
+    expect(client.streamChat).toHaveBeenCalledTimes(2);
+  });
+
   it("reloads a resident instance whose window is below the resolved policy", async () => {
     // Loaded at 8192 (e.g. under the old default) but the policy resolves to
     // 32768 — the undersized instance must be evicted and reloaded, or the

@@ -13,7 +13,6 @@
 import { LMSClient } from "./dist/api-client.js";
 import { ModelLifecycle } from "./dist/model-lifecycle.js";
 import { discoverAndMapModels } from "./dist/model-discovery.js";
-import { migrateLmstudioToLms } from "./dist/migrate.js";
 import { detectLMStudio, validateServer } from "./dist/health.js";
 
 const BASE_URL = process.env.LMS_BASE_URL;
@@ -107,31 +106,7 @@ try {
     pass(`Embedding model correctly filtered from discovery output`);
   }
 
-  // ── 4. migrateLmstudioToLms ──
-  section("migrateLmstudioToLms (using user's actual ~/.config/opencode/opencode.jsonc shape)");
-  const fakeLmstudio = {
-    name: "LM Studio (Custom)",
-    npm: "@ai-sdk/openai-compatible",
-    options: {
-      baseURL: `${BASE_URL}/v1`,
-      apiKey: API_KEY,
-      timeout: 6000000,
-    },
-    models: {
-      "gemma4-4b": { id: LLM_KEY, name: "Gemma 4 4B" },
-    },
-  };
-  const migrated = migrateLmstudioToLms(fakeLmstudio);
-  if (migrated.baseURL === BASE_URL) pass(`baseURL stripped of /v1 → ${migrated.baseURL}`);
-  else fail("migrate baseURL", `expected ${BASE_URL}, got ${migrated.baseURL}`);
-  if (migrated.apiKey === API_KEY) pass(`apiKey carried through from options.apiKey`);
-  else fail("migrate apiKey", "lost");
-  if (migrated.autoDetect === false) pass(`autoDetect=false because baseURL was explicit`);
-  else fail("migrate autoDetect", `expected false, got ${migrated.autoDetect}`);
-  if (migrated.models?.["gemma4-4b"]?.id === LLM_KEY) pass(`model override preserved`);
-  else fail("migrate models", "lost");
-
-  // ── 5. ensureModelLoaded (streaming) — embedding model first (smaller) ──
+  // ── 4. ensureModelLoaded (streaming) — embedding model first (smaller) ──
   section(`Streaming load: ${EMBED_KEY}`);
   const before = await client.getModels();
   const embedBefore = before.find(m => m.key === EMBED_KEY);
@@ -167,7 +142,7 @@ try {
     }
   }
 
-  // ── 6. ensureModelLoaded (streaming) — LLM ──
+  // ── 5. ensureModelLoaded (streaming) — LLM ──
   section(`Streaming load: ${LLM_KEY}`);
   const before2 = await client.getModels();
   const llmBefore = before2.find(m => m.key === LLM_KEY);
@@ -217,16 +192,40 @@ try {
     }
   }
 
-  // ── 7. Idempotency check: calling ensureModelLoaded when already loaded should noop ──
-  section("Idempotency");
-  const t0 = Date.now();
-  let eventsOnSecondCall = 0;
+  // ── 6. Idempotency / context policy: a repeat ensureModelLoaded should
+  //       no-op when the resident window covers the (default 32768) policy,
+  //       and evict + reload when it doesn't (see model-lifecycle.ts).
+  section("Idempotency / context policy");
   const reloaded = await client.getModels();
   const llmReloaded = reloaded.find(m => m.key === LLM_KEY);
-  await lifecycle.ensureModelLoaded(BASE_URL, llmReloaded, () => { eventsOnSecondCall++; });
-  const dt = ((Date.now() - t0) / 1000).toFixed(3);
-  if (eventsOnSecondCall === 0) pass(`Second call returned quickly (${dt}s) with 0 events — model already loaded, short-circuited`);
-  else fail("idempotency", `Got ${eventsOnSecondCall} events on second call; expected 0`);
+  if (!llmReloaded || llmReloaded.loaded_instances.length === 0) {
+    fail("idempotency", `${LLM_KEY} not loaded — an earlier load step must have failed`);
+  } else {
+    const policyCtx = Math.min(32768, llmReloaded.max_context_length); // DEFAULT_CONTEXT_LENGTH
+    const residentCtx = Math.max(...llmReloaded.loaded_instances.map(i => i.config.context_length));
+    const t0 = Date.now();
+    let eventsOnSecondCall = 0;
+    await lifecycle.ensureModelLoaded(BASE_URL, llmReloaded, () => { eventsOnSecondCall++; });
+    const dt = ((Date.now() - t0) / 1000).toFixed(3);
+
+    if (residentCtx >= policyCtx) {
+      if (eventsOnSecondCall === 0) pass(`Second call returned quickly (${dt}s) with 0 events — resident ctx ${residentCtx} ≥ policy ${policyCtx}, short-circuited`);
+      else fail("idempotency", `Got ${eventsOnSecondCall} events on second call; resident ctx ${residentCtx} ≥ policy ${policyCtx} should short-circuit`);
+    } else {
+      // Resident instance predates the policy (e.g. loaded by an older plugin
+      // or manually at a small window) — expect an evict + reload at policyCtx.
+      const after = (await client.getModels()).find(m => m.key === LLM_KEY);
+      const ctxAfter = Math.max(...(after?.loaded_instances.map(i => i.config.context_length) ?? [0]));
+      if (ctxAfter >= policyCtx) {
+        pass(`Undersized resident instance (ctx ${residentCtx}) reloaded at ${ctxAfter} in ${dt}s`);
+        for (const inst of after.loaded_instances) {
+          if (ALLOWED.has(after.key)) loadedInstances.push(inst.id);
+        }
+      } else {
+        fail("undersized reload", `resident ctx ${residentCtx} < policy ${policyCtx}, but post-call ctx is ${ctxAfter}`);
+      }
+    }
+  }
 
 } catch (err) {
   console.error("\nFATAL:", err);

@@ -5,7 +5,8 @@ An [LM Studio](https://lmstudio.ai) provider plugin for [OpenCode](https://openc
 ## What it does
 
 - Discovers the chat models your LM Studio server is hosting and exposes them in OpenCode. Embedding models are filtered out by default (OpenCode has no slot that consumes them); list one in `provider.lmstudio.models` to opt it back in.
-- Loads an unloaded LLM on first reference; load progress is logged to the OpenCode server log. Loads at a capped context window (`contextLength`, default 8k) to keep VRAM in check, and tags the model with an idle `ttl` (default 1h) so it auto-evicts when unused.
+- Loads an unloaded LLM on first reference; load progress is logged to the OpenCode server log. Loads at a capped context window (`contextLength`, default 32k — agent sessions open well past 8k) to keep VRAM in check, and tags the model with an idle `ttl` (default 1h) so it auto-evicts when unused. A resident instance loaded with a smaller window than the policy is evicted and reloaded at it; concurrent sessions referencing the same cold model share a single load.
+- Self-heals when LM Studio starts after OpenCode: discovery is retried on demand (throttled to 30s) from the first request that needs it, so auto-load and model listing recover without an OpenCode restart.
 - Forwards an `Authorization: Bearer …` header to LM Studio when `apiKey` is set.
 - Demotes `reasoning_effort: "max"` to `"xhigh"` before requests leave OpenCode, since LM Studio rejects `max`.
 - Sets each model's OpenCode capability flags from what LM Studio reports — `reasoning`, `attachment` (vision models), `temperature`, `family`, etc. — and marks reasoning-capable models with `interleaved: { field: "reasoning_content" }` so OpenCode renders the streaming reasoning trace live in the TUI. Tool calling is always advertised as available (LM Studio's `trained_for_tool_use` flag is unreliable as a gate, so it's used only for a discovery-log diagnostic, not to disable tools).

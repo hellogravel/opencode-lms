@@ -110,6 +110,13 @@ export class ModelLifecycle {
   private client: LMSClient;
   private cache: ModelStatusCache;
   private policy: ModelLoadPolicy;
+  // Single-flight guard for ensureModelLoaded, keyed by model key. Concurrent
+  // sessions (e.g. a kanban board dispatching several headless agents at once)
+  // all hit chat.params for the same cold model inside the status cache's TTL,
+  // so each would pass the loaded-check and load its own instance — and the
+  // undersized-reload path would interleave unload/load. Joiners await the
+  // first caller's load instead.
+  private inflightLoads = new Map<string, Promise<void>>();
 
   constructor(client: LMSClient, policy: ModelLoadPolicy = {}) {
     this.client = client;
@@ -144,8 +151,25 @@ export class ModelLifecycle {
    * can observe model_load.start/progress/end. The stream is aborted as soon as
    * model_load.end fires (or on error) to avoid running inference. Falls back to
    * /api/v1/models/load if the streaming endpoint can't be opened.
+   *
+   * Single-flight per model key: concurrent callers join the in-progress load
+   * (only the first caller's onEvent sees the load events).
    */
-  async ensureModelLoaded(
+  ensureModelLoaded(
+    baseURL: string,
+    modelInfo: LMSModelInfo,
+    onEvent?: (event: LMSStreamEvent) => void,
+  ): Promise<void> {
+    const existing = this.inflightLoads.get(modelInfo.key);
+    if (existing) return existing;
+    const load = this.ensureModelLoadedNow(baseURL, modelInfo, onEvent).finally(() => {
+      this.inflightLoads.delete(modelInfo.key);
+    });
+    this.inflightLoads.set(modelInfo.key, load);
+    return load;
+  }
+
+  private async ensureModelLoadedNow(
     baseURL: string,
     modelInfo: LMSModelInfo,
     onEvent?: (event: LMSStreamEvent) => void,
