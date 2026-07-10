@@ -157,12 +157,63 @@ describe("discoverAndMapModels", () => {
   });
 
   it("a cold model advertises its full max_context_length, output capped at 8192", () => {
+    // No load policy (the disableAutoLoad path) — legacy advertising rules.
     const result = discoverAndMapModels(
       [llmModel({ key: "cold", max_context_length: 131072 })],
       undefined,
     );
     // cold → context = max = 131072; output = min(floor(131072/4), 8192) = 8192.
     expect(result["cold"].limit).toEqual({ context: 131072, output: 8192 });
+  });
+
+  it("with a load policy, a cold model advertises the resolved load context, not max", () => {
+    const result = discoverAndMapModels(
+      [llmModel({ key: "cold", max_context_length: 131072 })],
+      undefined,
+      { contextLength: 32768 },
+    );
+    // The model will be loaded at 32768 — advertising 131072 would let
+    // OpenCode build prompts the loaded instance rejects.
+    expect(result["cold"].limit).toEqual({ context: 32768, output: 8192 });
+  });
+
+  it("with a load policy, an undersized resident instance advertises the policy window (it gets reloaded)", () => {
+    const result = discoverAndMapModels(
+      [
+        llmModel({
+          key: "stale",
+          max_context_length: 131072,
+          loaded_instances: [{ id: "i1", config: { context_length: 8192 } }],
+        }),
+      ],
+      undefined,
+      { contextLength: 32768 },
+    );
+    expect(result["stale"].limit).toEqual({ context: 32768, output: 8192 });
+  });
+
+  it("with a load policy, a roomier resident instance advertises its own window (it is kept)", () => {
+    const result = discoverAndMapModels(
+      [
+        llmModel({
+          key: "roomy",
+          max_context_length: 131072,
+          loaded_instances: [{ id: "i1", config: { context_length: 65536 } }],
+        }),
+      ],
+      undefined,
+      { contextLength: 32768 },
+    );
+    expect(result["roomy"].limit).toEqual({ context: 65536, output: 8192 });
+  });
+
+  it("a per-model policy override feeds the advertised context for that model", () => {
+    const result = discoverAndMapModels(
+      [llmModel({ key: "special", max_context_length: 131072 })],
+      undefined,
+      { contextLength: 16384, perModel: { special: { contextLength: 65536 } } },
+    );
+    expect(result["special"].limit).toEqual({ context: 65536, output: 8192 });
   });
 
   it("a user limit.output override wins over the reserve formula", () => {

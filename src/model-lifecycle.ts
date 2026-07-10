@@ -7,8 +7,11 @@ const MAX_CACHE_SIZE = 50;
 
 // Default cap for the context window a model is loaded with. LM Studio would
 // otherwise load at each model's max_context_length; capping keeps VRAM in
-// check. A model whose max is below this loads at its max (see resolveContextLength).
-const DEFAULT_CONTEXT_LENGTH = 8192;
+// check. 32768, not smaller: an OpenCode agent session opens at well over 8k
+// tokens (system prompt + tool schemas + rules), so an 8k window rejects the
+// very first request — fatal for headless sessions, which have no retry. A
+// model whose max is below this loads at its max (see resolveContextLength).
+const DEFAULT_CONTEXT_LENGTH = 32768;
 
 /**
  * Load-time knobs threaded from provider config into the lifecycle — the single
@@ -20,10 +23,27 @@ const DEFAULT_CONTEXT_LENGTH = 8192;
  * applyCompletionTtl in ttl.ts), which is where OpenCode's inference goes.
  */
 export interface ModelLoadPolicy {
-  /** Global default cap for the load-time context window. Default 8192. */
+  /** Global default cap for the load-time context window. Default 32768. */
   contextLength?: number;
   /** Per-model load-time overrides, keyed by model key. */
   perModel?: Record<string, { contextLength?: number }>;
+}
+
+/**
+ * Resolve the load-time context window for a model: a per-model override
+ * wins, else the global cap (default 32768), always clamped to the model's
+ * own max_context_length. This is the VRAM knob; model discovery also uses it
+ * so the advertised `limit.context` matches what requests will actually get.
+ */
+export function resolveContextLength(
+  policy: ModelLoadPolicy,
+  modelInfo: LMSModelInfo,
+): number {
+  const desired =
+    policy.perModel?.[modelInfo.key]?.contextLength ??
+    policy.contextLength ??
+    DEFAULT_CONTEXT_LENGTH;
+  return Math.min(desired, modelInfo.max_context_length);
 }
 
 interface CacheEntry {
@@ -98,20 +118,6 @@ export class ModelLifecycle {
   }
 
   /**
-   * Resolve the load-time context window for a model: a per-model override
-   * wins, else the global cap (default 8192), always clamped to the model's
-   * own max_context_length. This is the VRAM knob, not the UI `limit.context`.
-   */
-  private resolveContextLength(modelInfo: LMSModelInfo): number {
-    const maxCtx = modelInfo.max_context_length;
-    const desired =
-      this.policy.perModel?.[modelInfo.key]?.contextLength ??
-      this.policy.contextLength ??
-      DEFAULT_CONTEXT_LENGTH;
-    return Math.min(desired, maxCtx);
-  }
-
-  /**
    * Get loaded models, using cache when available.
    */
   /**
@@ -151,11 +157,33 @@ export class ModelLifecycle {
     const current = (await this.getAllModels(baseURL)).find(
       (m) => m.key === modelInfo.key,
     );
-    if (current && current.loaded_instances.length > 0) return;
 
     // Resolve the load-time context window once (VRAM knob; capped at the
     // model's own max), then use it at every load site below.
-    const ctx = this.resolveContextLength(modelInfo);
+    const ctx = resolveContextLength(this.policy, modelInfo);
+
+    if (current && current.loaded_instances.length > 0) {
+      // Reuse any resident instance whose window already covers the policy.
+      // One below it (e.g. loaded under an older, smaller default) would
+      // reject an agent-sized prompt outright — fatal for headless sessions,
+      // which have no retry — so evict undersized instances and fall through
+      // to a fresh load at the resolved window.
+      if (
+        current.loaded_instances.some(
+          (inst) => inst.config.context_length >= ctx,
+        )
+      ) {
+        return;
+      }
+      for (const inst of current.loaded_instances) {
+        try {
+          await this.client.unloadModel(inst.id);
+        } catch {
+          // Best-effort: even if the unload fails, the fresh load below still
+          // produces an instance with an adequate window.
+        }
+      }
+    }
 
     // Embedding models can't be loaded via /api/v1/chat — that endpoint is
     // LLM-only and returns model_not_found. Use the synchronous load endpoint.

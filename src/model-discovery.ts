@@ -1,10 +1,11 @@
 import type { LMSModelInfo, MappedModelConfig, LMSModelOverride } from "./types.js";
+import { resolveContextLength, type ModelLoadPolicy } from "./model-lifecycle.js";
 import { log } from "./log.js";
 
 /**
  * Map a single LM Studio model to OpenCode model config format.
  */
-function mapSingleModel(model: LMSModelInfo): MappedModelConfig {
+function mapSingleModel(model: LMSModelInfo, loadPolicy?: ModelLoadPolicy): MappedModelConfig {
   const isLoaded = model.loaded_instances.length > 0;
   const loadedInstance = isLoaded ? model.loaded_instances[0] : undefined;
   const isEmbedding = model.type === "embedding";
@@ -37,16 +38,26 @@ function mapSingleModel(model: LMSModelInfo): MappedModelConfig {
     modalities = { input: inputMods, output: ["text"] };
   }
 
-  // limit.context (UI metadata, not the load-time VRAM knob): for a loaded
-  // model, reflect the smallest active instance's context so the UI never
-  // promises more than what's actually loaded; for a cold (JIT-loadable) model,
-  // advertise its full max_context_length. Always clamped to max.
-  const effectiveContext = isLoaded
+  // limit.context must describe the window requests will actually get —
+  // OpenCode budgets prompt/compaction against it, so overstating it means the
+  // request dies server-side instead (fatal for headless sessions, no retry).
+  // With a load policy in force (auto-load on), that window is
+  // resolveContextLength: cold models load at it and undersized resident
+  // instances are reloaded to it (see ensureModelLoaded), while a larger
+  // resident instance is kept and used. Without a policy (disableAutoLoad),
+  // the plugin never (re)loads: reflect the smallest resident instance, or
+  // max_context_length for a cold model. Always clamped to max.
+  const loadedContext = isLoaded
     ? Math.min(
         ...model.loaded_instances.map((inst) => inst.config.context_length),
         model.max_context_length,
       )
-    : model.max_context_length;
+    : undefined;
+  const policyContext = loadPolicy ? resolveContextLength(loadPolicy, model) : undefined;
+  const effectiveContext =
+    policyContext !== undefined
+      ? Math.max(policyContext, loadedContext ?? 0)
+      : loadedContext ?? model.max_context_length;
   // LMS has no separate output cap (output is bounded by remaining context).
   // Reserve a quarter of the window for output, capped at 8192 — agustif's
   // heuristic. A user `limit.output` override wins via the overrides path.
@@ -142,6 +153,9 @@ export function groupModelsByToolUse(discovered: LMSModelInfo[]): {
 export function discoverAndMapModels(
   discovered: LMSModelInfo[],
   userOverrides: Record<string, LMSModelOverride> | null | undefined,
+  // Load-time context policy, when the plugin enforces one (auto-load on).
+  // Threads into limit.context so the UI window matches the loaded window.
+  loadPolicy?: ModelLoadPolicy,
 ): Record<string, typeof discovered[0] extends LMSModelInfo ? MappedModelConfig : never> {
   const result: Record<string, MappedModelConfig> = {};
 
@@ -195,7 +209,7 @@ export function discoverAndMapModels(
     // "<provider>/<model id>", and the model id may itself contain "/"
     // (e.g. "google/gemma-4-e4b"); rewriting those into underscores would
     // silently break user configs that reference the canonical key.
-    result[model.key] = mapSingleModel(model);
+    result[model.key] = mapSingleModel(model, loadPolicy);
   }
 
   // Diagnostics only: surface LMS's tool-use training signal without gating on

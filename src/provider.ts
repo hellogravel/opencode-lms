@@ -143,9 +143,18 @@ export async function buildProvider(
   }
 
   const client = new LMSClient({ baseURL: config.baseURL!, apiKey: config.apiKey });
-  const lifecycle = new ModelLifecycle(client, buildLoadPolicy(config));
+  const loadPolicy = buildLoadPolicy(config);
+  const lifecycle = new ModelLifecycle(client, loadPolicy);
   const discovered = await lifecycle.getAvailableModels(config.baseURL!);
-  const mapped = discoverAndMapModels(discovered, config.models);
+  // Thread the load policy into discovery so each model's limit.context
+  // matches the window it will actually be loaded with. With disableAutoLoad
+  // the plugin never (re)loads, so the policy says nothing about the real
+  // window — fall back to advertising what's actually resident.
+  const mapped = discoverAndMapModels(
+    discovered,
+    config.models,
+    config.disableAutoLoad ? undefined : loadPolicy,
+  );
 
   const models: Record<string, ModelV2> = {};
   const configModels: Record<string, Record<string, unknown>> = {};

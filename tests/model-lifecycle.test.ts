@@ -214,6 +214,53 @@ describe("ModelLifecycle.ensureModelLoaded", () => {
     expect(client.loadModel).not.toHaveBeenCalled();
   });
 
+  it("reloads a resident instance whose window is below the resolved policy", async () => {
+    // Loaded at 8192 (e.g. under the old default) but the policy resolves to
+    // 32768 — the undersized instance must be evicted and reloaded, or the
+    // first agent-sized prompt dies server-side.
+    const stale = fakeModel("stale", {
+      max_context_length: 131072,
+      loaded_instances: [{ id: "inst-small", config: { context_length: 8192 } }],
+    });
+    const client = makeStubClient({
+      getModels: vi.fn().mockResolvedValue([stale]),
+      unloadModel: vi.fn().mockResolvedValue({ instance_id: "inst-small" }),
+      streamChat: vi.fn().mockResolvedValue(
+        sseStreamFromEvents([
+          { type: "model_load.end", model_instance_id: "inst-big", load_time_seconds: 0.5 },
+        ]),
+      ),
+      loadModel: vi.fn(),
+    });
+    const lifecycle = new ModelLifecycle(client, { contextLength: 32768 });
+
+    await lifecycle.ensureModelLoaded("http://stub", stale);
+
+    expect(client.unloadModel).toHaveBeenCalledWith("inst-small");
+    const call = (client.streamChat as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect((call[2] as { context_length?: number }).context_length).toBe(32768);
+  });
+
+  it("keeps a resident instance whose window meets or exceeds the policy", async () => {
+    const roomy = fakeModel("roomy", {
+      max_context_length: 131072,
+      loaded_instances: [{ id: "inst-big", config: { context_length: 65536 } }],
+    });
+    const client = makeStubClient({
+      getModels: vi.fn().mockResolvedValue([roomy]),
+      unloadModel: vi.fn(),
+      streamChat: vi.fn(),
+      loadModel: vi.fn(),
+    });
+    const lifecycle = new ModelLifecycle(client, { contextLength: 32768 });
+
+    await lifecycle.ensureModelLoaded("http://stub", roomy);
+
+    expect(client.unloadModel).not.toHaveBeenCalled();
+    expect(client.streamChat).not.toHaveBeenCalled();
+    expect(client.loadModel).not.toHaveBeenCalled();
+  });
+
   it("uses the synchronous load endpoint for embedding models, skipping /api/v1/chat", async () => {
     const embed = fakeModel("embed-1", { type: "embedding", max_context_length: 512 });
     const client = makeStubClient({
@@ -317,9 +364,9 @@ describe("ModelLifecycle context-length policy", () => {
     return (call[2] as { context_length?: number }).context_length;
   }
 
-  it("caps the load context at the 8192 default on a large-window model", async () => {
+  it("caps the load context at the 32768 default on a large-window model", async () => {
     const big = fakeModel("big", { max_context_length: 131072 });
-    expect(await loadAndCaptureStreamCtx(big)).toBe(8192);
+    expect(await loadAndCaptureStreamCtx(big)).toBe(32768);
   });
 
   it("a per-model override raises the load context toward max", async () => {
@@ -346,7 +393,7 @@ describe("ModelLifecycle context-length policy", () => {
     expect(clamped).toBe(4096);
   });
 
-  it("a model whose max is below the 8192 default loads at its max", async () => {
+  it("a model whose max is below the 32768 default loads at its max", async () => {
     const small = fakeModel("small", { max_context_length: 4096 });
     expect(await loadAndCaptureStreamCtx(small)).toBe(4096);
   });
@@ -361,7 +408,7 @@ describe("ModelLifecycle context-length policy", () => {
     const lifecycle = new ModelLifecycle(client);
     await lifecycle.ensureModelLoaded("http://stub", embed);
     expect(client.loadModel).toHaveBeenCalledWith("embed", expect.objectContaining({
-      context_length: 8192,
+      context_length: 32768,
     }));
   });
 

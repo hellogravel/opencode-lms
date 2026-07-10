@@ -291,10 +291,15 @@ export interface LMSProviderConfig {
   chunkTimeout?: number;
   /**
    * Global default cap for the context window a model is *loaded* with (the
-   * VRAM knob — distinct from the UI-facing `limit.context`). LM Studio would
-   * otherwise load at each model's `max_context_length`, which can dominate
-   * VRAM on large-window models. Default 8192. A model whose max is below this
-   * loads at its max; a per-model `contextLength` override can raise toward max.
+   * VRAM knob). LM Studio would otherwise load at each model's
+   * `max_context_length`, which can dominate VRAM on large-window models.
+   * Default 32768 — an OpenCode agent session opens at well over 8k tokens,
+   * so smaller defaults reject the first request. A model whose max is below
+   * this loads at its max; a per-model `contextLength` override adjusts per
+   * model. A resident instance with a smaller window than the resolved value
+   * is unloaded and reloaded at it on first use; the advertised
+   * `limit.context` follows this value so OpenCode budgets against the real
+   * window.
    */
   contextLength?: number;
   /**

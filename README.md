@@ -60,7 +60,7 @@ Under `provider.lmstudio.options`:
 | `downloadTimeout` | `number` | `1800000` | Download timeout in ms |
 | `timeout` | `number` | `600000` | Overall chat-completion request timeout in ms |
 | `chunkTimeout` | `number` | `120000` | Inter-chunk (time-to-next-token) timeout in ms — raise for SWA models (see note) |
-| `contextLength` | `number` | `8192` | Global cap on the context window a model is *loaded* with (the VRAM knob). A model whose max is below this loads at its max; raise per-model with `models[<id>].contextLength`. Distinct from `limit.context` (UI metadata) |
+| `contextLength` | `number` | `32768` | Global cap on the context window a model is *loaded* with (the VRAM knob). A model whose max is below this loads at its max; adjust per-model with `models[<id>].contextLength`. A resident instance with a smaller window is unloaded and reloaded at this value on first use, and the advertised `limit.context` follows it, so OpenCode budgets against the real window |
 | `ttl` | `number` | `3600` | Idle seconds before a loaded model auto-evicts (frees VRAM), sent on each chat completion. The countdown resets on every request, so active models stay resident. `0` = resident (never auto-evict). **Reach is limited by LM Studio's API — see the TTL note below** |
 
 > **TTL vs auto-load (LM Studio ≤0.4.19):** LM Studio applies a request's `ttl`
