@@ -1,6 +1,6 @@
 {
   "name": "@hellogravel/opencode-lms",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "An LM Studio provider plugin for OpenCode — dynamic model discovery, streaming auto-load, and full LM Studio REST API integration",
   "type": "module",
   "main": "./dist/index.js",
