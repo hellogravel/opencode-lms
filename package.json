@@ -1,7 +1,7 @@
 {
   "name": "@hellogravel/opencode-lms",
   "version": "1.0.0",
-  "description": "LM Studio extras for OpenCode 2's built-in provider — capped-context auto-load, idle TTL eviction, tool calling on, and reasoning-effort fixes",
+  "description": "LM Studio extras for OpenCode 2's built-in provider \u2014 capped-context auto-load, idle TTL eviction, tool calling on, and reasoning-effort fixes",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -23,10 +23,8 @@
     "test:run": "vitest run",
     "prepublishOnly": "npm run build"
   },
-  "dependencies": {
-    "@opencode/plugin": "2.0.29"
-  },
   "devDependencies": {
+    "@opencode/plugin": "2.0.29",
     "@types/node": "^22.0.0",
     "typescript": "^5.9.0",
     "vitest": "^3.0.0"
