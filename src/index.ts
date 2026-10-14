@@ -1,8 +1,10 @@
-import type { Plugin, PluginInput, PluginModule, Hooks } from "@opencode-ai/plugin";
-import type { LMSModelInfo, LMSProviderConfig, ModelV2 } from "./types.js";
-import { buildProvider } from "./provider.js";
-import { applyCompletionTtl } from "./ttl.js";
-import type { ModelLifecycle } from "./model-lifecycle.js";
+import type { Plugin } from "@opencode/plugin";
+import { LMSClient } from "./api-client.js";
+import { ModelLifecycle, resolveContextLength } from "./model-lifecycle.js";
+import { PROVIDER_ID, applyModelPolicy, buildCatalog, type Catalog } from "./model-policy.js";
+import { resolveOptions, serverRoot } from "./options.js";
+import { demoteReasoningEffort } from "./reasoning-effort.js";
+import type { LMSModelInfo } from "./types.js";
 import {
   isModelLoadStart,
   isModelLoadProgress,
@@ -11,153 +13,93 @@ import {
 } from "./streaming.js";
 import { log } from "./log.js";
 
-// Matches the models.dev catalog id — required for the `provider.models` hook
-// to fire (OpenCode skips the hook for providers not in that catalog).
-const PROVIDER_ID = "lmstudio";
-
-// Default idle TTL (seconds) applied to each completion so LM Studio auto-evicts
-// the model after this many idle seconds. `0` = resident (no ttl sent).
-const DEFAULT_TTL_SECONDS = 3600;
-
-// Minimum gap between re-discovery attempts when LM Studio wasn't reachable at
-// config time. Keeps a down server from adding a health-check probe to every
-// chat request.
-const REDISCOVER_THROTTLE_MS = 30_000;
-
-export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => {
+/**
+ * OpenCode 2 ships a built-in LM Studio provider that discovers models,
+ * filters embeddings, and refreshes on its own. This plugin layers on top of
+ * it — it registers no provider — and adds what the built-in doesn't do:
+ *
+ *   1. auto-load a cold model at a capped context window, and reload a
+ *      resident instance that was loaded too small (`model.request` hook);
+ *   2. idle `ttl` eviction (model transform: request body overlay);
+ *   3. tool calling always on (model transform);
+ *   4. reasoning: effort variants for graduated models, none for on/off-only
+ *      ones (model transform), and `"max"` demoted to `"xhigh"` on the wire
+ *      (`http.request` hook).
+ */
+async function setup(ctx: Plugin.Context): Promise<Plugin.Cleanup> {
+  const options = resolveOptions(ctx.options);
   log("[opencode-lms] LM Studio plugin initialized");
 
-  let lifecycle: ModelLifecycle | null = null;
-  let resolvedBaseURL: string | null = null;
-  let disableAutoLoad = false;
-  let autoDownload = false;
-  let downloadTimeout: number | undefined;
-  // Idle TTL (seconds) applied to each completion; `0` = resident. Resolved in
-  // the `config` hook, consumed in `chat.params`.
-  let ttlSeconds: number = DEFAULT_TTL_SECONDS;
-  // Populated by the `config` hook (which runs first) and handed back to
-  // OpenCode by the `provider.models` hook.
-  let discoveredModels: Record<string, ModelV2> = {};
-  // Kept so a failed discovery can be retried later (see ensureProviderReady).
-  let savedUserConfig: LMSProviderConfig | null = null;
-  let lastRediscoverAt = 0;
-  let rediscoverInFlight: Promise<void> | null = null;
+  // Where LM Studio lives. Not a plugin option: the built-in provider owns it
+  // (`providers.lmstudio.settings`), and the model transform captures it from
+  // the provider definition on every registry rebuild.
+  const source: { baseURL?: string; apiKey?: string } = {};
+  // Per-model facts the built-in drops (reasoning options, loaded instances).
+  // Read by the synchronous model transform; refreshed asynchronously.
+  let catalog: Catalog = new Map();
+  let catalogHash = "[]";
+  let refreshInFlight: Promise<void> | null = null;
+  let current: { root: string; apiKey?: string; lifecycle: ModelLifecycle } | null = null;
 
-  /** Adopt a healthy buildProvider result into the closure state. */
-  function adoptBuiltProvider(built: Awaited<ReturnType<typeof buildProvider>>): void {
-    lifecycle = built.lifecycle;
-    resolvedBaseURL = built.resolvedBaseURL;
-    discoveredModels = built.models;
-  }
-
-  /**
-   * Self-heal when LM Studio wasn't reachable at config time (e.g. OpenCode
-   * started first). Re-runs discovery, throttled and single-flight; on success
-   * the chat.params behaviors (auto-load, download) come alive and
-   * `provider.models` serves the discovered list. The provider *entry* written
-   * by the config hook is not revisited — OpenCode only re-reads config on
-   * reload — so model metadata in the picker may lag until then; auto-load
-   * works regardless because it needs only the lifecycle client.
-   */
-  function ensureProviderReady(): Promise<void> {
-    if (lifecycle && resolvedBaseURL) return Promise.resolve();
-    if (rediscoverInFlight) return rediscoverInFlight;
-    const now = Date.now();
-    if (now - lastRediscoverAt < REDISCOVER_THROTTLE_MS) return Promise.resolve();
-    lastRediscoverAt = now;
-    rediscoverInFlight = (async () => {
-      const built = await buildProvider(savedUserConfig);
-      if (!built.health?.healthy) return;
-      adoptBuiltProvider(built);
-      log(
-        `[opencode-lms] LM Studio became reachable — discovered ` +
-          `${Object.keys(built.models).length} model(s) at ${built.resolvedBaseURL}`,
-      );
-    })().finally(() => {
-      rediscoverInFlight = null;
+  /** One lifecycle per server, so its status cache and load single-flight are shared. */
+  function lifecycleFor(root: string): ModelLifecycle {
+    if (current && current.root === root && current.apiKey === source.apiKey) return current.lifecycle;
+    const client = new LMSClient({
+      baseURL: root,
+      apiKey: source.apiKey,
+      loadTimeout: options.loadTimeout,
     });
-    return rediscoverInFlight;
-  }
-
-  function normalizeBaseURL(url: string | undefined): string | undefined {
-    if (!url) return undefined;
-    return String(url).replace(/\/+$/, "").replace(/\/v1$/, "");
-  }
-
-  function readUserConfig(raw: Record<string, unknown> | undefined): LMSProviderConfig | null {
-    if (!raw) return null;
-    // OpenCode's ProviderConfig schema only carries `options` as an open
-    // bucket — top-level fields it doesn't recognize (baseURL, apiKey,
-    // autoDownload, etc.) get stripped on load. Read from `options` first;
-    // fall back to top-level for tolerance of hand-written configs.
-    const options = (raw.options as Record<string, unknown> | undefined) ?? {};
-    const pick = <T>(key: string): T | undefined =>
-      (options[key] as T | undefined) ?? (raw[key] as T | undefined);
-    return {
-      name: pick<string>("name") ?? (raw.name as string | undefined),
-      baseURL: normalizeBaseURL(pick<string>("baseURL")),
-      apiKey: pick<string>("apiKey"),
-      autoDetect: pick<boolean>("autoDetect"),
-      disableAutoLoad: pick<boolean>("disableAutoLoad"),
-      autoDownload: pick<boolean>("autoDownload"),
-      loadTimeout: pick<number>("loadTimeout"),
-      downloadTimeout: pick<number>("downloadTimeout"),
-      timeout: pick<number>("timeout"),
-      chunkTimeout: pick<number>("chunkTimeout"),
-      contextLength: pick<number>("contextLength"),
-      ttl: pick<number>("ttl"),
-      models: (raw.models as LMSProviderConfig["models"]) ?? (options.models as LMSProviderConfig["models"]),
-    };
+    current = { root, apiKey: source.apiKey, lifecycle: new ModelLifecycle(client, options.loadPolicy) };
+    return current.lifecycle;
   }
 
   /**
-   * LM Studio's `/v1/chat/completions` accepts `reasoning_effort` values from
-   * `none | minimal | low | medium | high | xhigh` and rejects anything else
-   * with HTTP 400. OpenCode's picker may emit `"max"` (used by certain
-   * OpenAI models like `5.1-codex-max`), which isn't in LMS's accepted set.
-   * Demote it to the closest accepted value before the AI SDK serializes
-   * the request. We probe a few conventional locations because the AI SDK
-   * may put reasoningEffort top-level or under providerOptions.
+   * Re-read LM Studio's model list and, if anything the transform reads
+   * changed, have OpenCode replay it. A failed read keeps the last catalog.
+   * Single-flight; the lifecycle's status cache absorbs bursts.
    */
-  function demoteUnsupportedReasoningEffort(
-    output: { options: Record<string, unknown> } | undefined,
-  ): void {
-    if (!output?.options) return;
-    const opts = output.options as Record<string, unknown>;
-    const providerOpts = (opts.providerOptions as Record<string, Record<string, unknown>> | undefined) ?? {};
-    const oaiCompat = providerOpts.openaiCompatible;
-    const oai = providerOpts.openai;
+  function refreshCatalog(): Promise<void> {
+    if (refreshInFlight) return refreshInFlight;
+    const root = serverRoot(source.baseURL);
+    if (!root) return Promise.resolve();
+    refreshInFlight = (async () => {
+      const models = await lifecycleFor(root).getAllModels(root);
+      const next = buildCatalog(models);
+      const hash = JSON.stringify([...next]);
+      if (hash === catalogHash) return;
+      catalog = next;
+      catalogHash = hash;
+      await ctx.model.reload();
+    })()
+      .catch((err) => log(`[opencode-lms] Catalog refresh failed: ${(err as Error).message}`))
+      .finally(() => {
+        refreshInFlight = null;
+      });
+    return refreshInFlight;
+  }
 
-    let demoted = false;
-    const demote = (target: Record<string, unknown> | undefined) => {
-      if (target && target.reasoningEffort === "max") {
-        target.reasoningEffort = "xhigh";
-        demoted = true;
-      }
-    };
-    demote(opts);
-    demote(oaiCompat);
-    demote(oai);
-
-    if (demoted) {
+  async function ensureLoadedWithLogging(
+    lifecycle: ModelLifecycle,
+    root: string,
+    model: LMSModelInfo,
+  ): Promise<void> {
+    const ctxLength = resolveContextLength(options.loadPolicy, model);
+    const adequate = model.loaded_instances.some((inst) => inst.config.context_length >= ctxLength);
+    if (!adequate) {
       log(
-        `[opencode-lms] Reasoning effort "max" demoted to "xhigh" ` +
-          `(LM Studio's /v1/chat/completions accepts: none, minimal, low, medium, high, xhigh)`,
+        model.loaded_instances.length > 0
+          ? `[opencode-lms] Reloading ${model.key} at context ${ctxLength} (resident instance too small)`
+          : `[opencode-lms] Auto-loading ${model.key} at context ${ctxLength}`,
       );
     }
-  }
-
-  async function ensureLoadedWithLogging(modelId: string, model: LMSModelInfo): Promise<void> {
-    if (!lifecycle || !resolvedBaseURL) return;
-    log(`[opencode-lms] Auto-loading model ${modelId}`);
     let lastReportedPct = -1;
-    await lifecycle.ensureModelLoaded(resolvedBaseURL, model, (event) => {
+    await lifecycle.ensureModelLoaded(root, model, (event) => {
       if (isModelLoadStart(event)) {
         log(`[opencode-lms] Load started (${event.model_instance_id})`);
       } else if (isModelLoadProgress(event)) {
         const pct = Math.floor(event.progress * 100);
         if (pct >= lastReportedPct + 10) {
-          log(`[opencode-lms] Loading ${modelId}: ${pct}%`);
+          log(`[opencode-lms] Loading ${model.key}: ${pct}%`);
           lastReportedPct = pct;
         }
       } else if (isModelLoadEnd(event)) {
@@ -168,127 +110,77 @@ export const LMSPlugin: Plugin = async (_input: PluginInput): Promise<Hooks> => 
     });
   }
 
-  return {
-    config: async (config) => {
-      const providers = (config as { provider?: Record<string, Record<string, unknown>> }).provider ?? {};
-      const userConfig: LMSProviderConfig | null = providers[PROVIDER_ID]
-        ? readUserConfig(providers[PROVIDER_ID])
-        : null;
-      savedUserConfig = userConfig;
+  // Behaviours 2–4 (and the advertised window that goes with 1): edit the
+  // models the built-in provider discovered. Runs after the built-in's
+  // provider transform; user `providers.lmstudio.models` overrides apply after
+  // plugin transforms, so explicit config still wins.
+  await ctx.model.transform((editor) => {
+    const settings = editor.provider.get(PROVIDER_ID)?.provider.settings;
+    source.baseURL = typeof settings?.baseURL === "string" ? settings.baseURL : undefined;
+    source.apiKey = typeof settings?.apiKey === "string" && settings.apiKey ? settings.apiKey : undefined;
+    applyModelPolicy(editor, {
+      catalog,
+      ttlSeconds: options.ttlSeconds,
+      loadPolicy: options.disableAutoLoad ? undefined : options.loadPolicy,
+    });
+  });
 
-      const built = await buildProvider(userConfig);
-
-      adoptBuiltProvider(built);
-      disableAutoLoad = Boolean(userConfig?.disableAutoLoad);
-      autoDownload = Boolean(userConfig?.autoDownload);
-      downloadTimeout = userConfig?.downloadTimeout;
-      // `?? default` keeps an explicit `0` (resident) distinct from "unset".
-      ttlSeconds = userConfig?.ttl ?? DEFAULT_TTL_SECONDS;
-
-      // Writing the provider entry is what *enables* the provider — a
-      // models.dev catalog provider stays hidden until a config/env/auth entry
-      // promotes it. The model list itself flows through `provider.models`.
-      const cfg = config as { provider?: Record<string, unknown> };
-      if (!cfg.provider) cfg.provider = {};
-      cfg.provider[PROVIDER_ID] = built.providerEntry;
-
-      if (built.health?.healthy) {
-        log(
-          `[opencode-lms] Discovered ${Object.keys(built.models).length} model(s) at ${resolvedBaseURL}` +
-            (autoDownload ? " (autoDownload on)" : ""),
-        );
-      } else {
-        console.warn("[opencode-lms] LM Studio server not reachable — provider registered with no models");
-      }
-    },
-
-    provider: {
-      id: PROVIDER_ID,
-      // OpenCode runs the `config` hook before building provider state, so
-      // `discoveredModels` is normally populated by the time this fires. If
-      // the server was down at config time, give discovery one more chance
-      // here (throttled) so a late-starting LM Studio still surfaces models.
-      models: async () => {
-        if (!lifecycle) await ensureProviderReady();
-        return discoveredModels;
-      },
-    },
-
-    "chat.params": async (input, output) => {
-      // OpenCode ≤1.16 passed a ProviderContext ({source, info, options});
-      // 1.17 passes Provider.Info directly (session/llm/request.ts triggers
-      // with `provider: input.provider`, and core reads `input.provider.id`).
-      // Read both shapes — the old guard silently no-op'd every chat.params
-      // behavior (TTL, reasoning demotion, auto-load) on 1.17.x.
-      const provider = input?.provider as
-        | { info?: { id?: string }; id?: string }
-        | undefined;
-      const providerID = provider?.info?.id ?? provider?.id;
-      if (providerID !== PROVIDER_ID) return;
-
-      // Always run the reasoning-effort demotion and TTL injection — both are
-      // independent of whether discovery is healthy and shouldn't be gated by it.
-      demoteUnsupportedReasoningEffort(output);
-      applyCompletionTtl(output, ttlSeconds);
-
-      // Server down at config time? Retry discovery (throttled) before giving
-      // up on the load/download behaviors for this request.
-      if (!lifecycle || !resolvedBaseURL) {
-        await ensureProviderReady();
-        if (!lifecycle || !resolvedBaseURL) return;
-      }
-
-      const modelId = input?.model?.id;
-      if (!modelId) return;
-
+  // Behaviour 1: auto-load before the model call leaves OpenCode. Awaited, so
+  // the completion only goes out once the model is resident at the capped
+  // window — otherwise LM Studio would JIT-load it at its own defaults. A
+  // throwing hook would fail the request, so every error is swallowed: worst
+  // case LM Studio JIT-loads, as it would without the plugin.
+  await ctx.session.hook(
+    "model.request",
+    async (event) => {
+      if (options.disableAutoLoad) return;
+      const root = serverRoot(event.baseURL) ?? serverRoot(source.baseURL);
+      if (!root) return;
+      const modelKey = event.model.id;
       try {
-        let models = await lifecycle.getAvailableModels(resolvedBaseURL);
-        let match = models.find((m) => m.key === modelId);
-
-        // Not on disk — download first if the user opted in.
-        if (!match) {
-          if (!autoDownload) return; // Let the AI SDK surface its own error.
-
-          log(`[opencode-lms] Model ${modelId} not on disk — starting download`);
-          let lastReportedPct = -1;
-          await lifecycle.downloadModelAndWait(
-            modelId,
-            (status) => {
-              const pct = status.progress != null ? Math.floor(status.progress * 100) : null;
-              if (pct != null && pct >= lastReportedPct + 10) {
-                log(`[opencode-lms] Downloading ${modelId}: ${pct}% (${status.status})`);
-                lastReportedPct = pct;
-              } else if (pct == null) {
-                log(`[opencode-lms] Downloading ${modelId}: ${status.status}`);
-              }
-            },
-            { timeoutMs: downloadTimeout },
-          );
-          log(`[opencode-lms] Download complete: ${modelId}`);
-
-          // Re-discover; the model should now be on disk
-          models = await lifecycle.getAvailableModels(resolvedBaseURL);
-          match = models.find((m) => m.key === modelId);
-          if (!match) {
-            console.warn(`[opencode-lms] Download completed but ${modelId} not visible in discovery`);
-            return;
-          }
-        }
-
-        if (disableAutoLoad) return;
-        if (match.loaded_instances.length > 0) return;
-
-        await ensureLoadedWithLogging(modelId, match);
+        const lifecycle = lifecycleFor(root);
+        const match = (await lifecycle.getAllModels(root)).find((m) => m.key === modelKey);
+        // Not on disk — let LM Studio surface its own error.
+        if (!match) return;
+        await ensureLoadedWithLogging(lifecycle, root, match);
       } catch (err) {
-        console.warn(`[opencode-lms] chat.params hook failed for ${modelId}: ${(err as Error).message}`);
+        console.warn(`[opencode-lms] Auto-load failed for ${modelKey}: ${(err as Error).message}`);
+      }
+      void refreshCatalog();
+    },
+    { providerID: PROVIDER_ID },
+  );
+
+  // Behaviour 4, wire side: LM Studio rejects reasoning_effort "max".
+  await ctx.session.hook(
+    "http.request",
+    async (event) => {
+      try {
+        const demoted = await demoteReasoningEffort(event.request);
+        if (demoted) event.request = demoted;
+      } catch (err) {
+        console.warn(`[opencode-lms] Reasoning-effort check failed: ${(err as Error).message}`);
       }
     },
-  };
-};
+    { providerID: PROVIDER_ID },
+  );
 
-// v1 plugin-module shape: OpenCode reads only `default` when it's an object
-// with id/server keys, ignoring named exports — which immunizes the entry
-// module against the legacy loader treating every function export as a plugin.
-// `id` is required for file-path plugins.
-export default { id: "opencode-lms", server: LMSPlugin } satisfies PluginModule;
+  // Follow the built-in's discovery instead of polling LM Studio a second
+  // time: each time the model registry changes (a model appeared, the server
+  // came up, config moved baseURL), re-read the catalog.
+  const controller = new AbortController();
+  void (async () => {
+    for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+      if (event.type === "model.updated") void refreshCatalog();
+    }
+  })().catch(() => {
+    // Aborted on unload, or the stream closed; nothing to clean up.
+  });
 
+  return () => controller.abort();
+}
+
+// V2 plugin module shape: OpenCode reads only the default export's `id` and
+// `setup`. Types only — the module carries no runtime import of
+// @opencode/plugin, whose `Plugin.define` is an identity function.
+export default { id: "opencode-lms", setup } satisfies Plugin.Plugin;

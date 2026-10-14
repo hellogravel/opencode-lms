@@ -1,21 +1,9 @@
 import type {
   LMSStreamEvent,
-  LMSChatStartEvent,
   LMSModelLoadStartEvent,
   LMSModelLoadProgressEvent,
   LMSModelLoadEndEvent,
-  LMSReasoningStartEvent,
-  LMSReasoningDeltaEvent,
-  LMSReasoningEndEvent,
-  LMSMessageStartEvent,
-  LMSMessageDeltaEvent,
-  LMSMessageEndEvent,
-  LMSChatEndEvent,
   LMSErrorEvent,
-  LMSToolCallStartEvent,
-  LMSToolCallArgumentsEvent,
-  LMSToolCallSuccessEvent,
-  LMSToolCallFailureEvent,
 } from "./types.js";
 
 /**
@@ -103,12 +91,8 @@ export async function* parseSSEStream(
 }
 
 /**
- * Type guard helpers for distinguishing event types.
+ * Type guard helpers for the load-progress events auto-load observes.
  */
-export function isChatStart(e: LMSStreamEvent): e is LMSChatStartEvent {
-  return e.type === "chat.start";
-}
-
 export function isModelLoadStart(e: LMSStreamEvent): e is LMSModelLoadStartEvent {
   return e.type === "model_load.start";
 }
@@ -121,50 +105,6 @@ export function isModelLoadEnd(e: LMSStreamEvent): e is LMSModelLoadEndEvent {
   return e.type === "model_load.end";
 }
 
-export function isReasoningStart(e: LMSStreamEvent): e is LMSReasoningStartEvent {
-  return e.type === "reasoning.start";
-}
-
-export function isReasoningDelta(e: LMSStreamEvent): e is LMSReasoningDeltaEvent {
-  return e.type === "reasoning.delta";
-}
-
-export function isReasoningEnd(e: LMSStreamEvent): e is LMSReasoningEndEvent {
-  return e.type === "reasoning.end";
-}
-
-export function isMessageStart(e: LMSStreamEvent): e is LMSMessageStartEvent {
-  return e.type === "message.start";
-}
-
-export function isMessageDelta(e: LMSStreamEvent): e is LMSMessageDeltaEvent {
-  return e.type === "message.delta";
-}
-
-export function isMessageEnd(e: LMSStreamEvent): e is LMSMessageEndEvent {
-  return e.type === "message.end";
-}
-
-export function isChatEnd(e: LMSStreamEvent): e is LMSChatEndEvent {
-  return e.type === "chat.end";
-}
-
 export function isError(e: LMSStreamEvent): e is LMSErrorEvent {
   return e.type === "error";
-}
-
-export function isToolCallStart(e: LMSStreamEvent): e is LMSToolCallStartEvent {
-  return e.type === "tool_call.start";
-}
-
-export function isToolCallArguments(e: LMSStreamEvent): e is LMSToolCallArgumentsEvent {
-  return e.type === "tool_call.arguments";
-}
-
-export function isToolCallSuccess(e: LMSStreamEvent): e is LMSToolCallSuccessEvent {
-  return e.type === "tool_call.success";
-}
-
-export function isToolCallFailure(e: LMSStreamEvent): e is LMSToolCallFailureEvent {
-  return e.type === "tool_call.failure";
 }
