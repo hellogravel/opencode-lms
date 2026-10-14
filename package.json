@@ -1,14 +1,14 @@
 {
   "name": "@hellogravel/opencode-lms",
-  "version": "0.4.0",
-  "description": "An LM Studio provider plugin for OpenCode — dynamic model discovery, streaming auto-load, and full LM Studio REST API integration",
+  "version": "1.0.0",
+  "description": "LM Studio extras for OpenCode 2's built-in provider — capped-context auto-load, idle TTL eviction, tool calling on, and reasoning-effort fixes",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     }
   },
   "files": [
@@ -24,7 +24,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "1.17.15"
+    "@opencode/plugin": "2.0.29"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

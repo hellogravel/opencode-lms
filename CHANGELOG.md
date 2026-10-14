@@ -4,7 +4,60 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] - Unreleased
+
+A slim port to OpenCode 2. OpenCode 2's built-in `lmstudio` provider now does
+discovery, embedding filtering, periodic refresh, and provider registration, so
+this release deletes all of that and keeps only what the built-in lacks.
+**0.4.x remains the version for OpenCode 1.**
+
+### Changed (breaking)
+
+- **OpenCode 2 only.** Rewritten against `@opencode/plugin` (exact-pinned to
+  `2.0.29`; was `@opencode-ai/plugin` `1.17.15`). The entry module
+  default-exports a V2 definition, `{ id: "opencode-lms", setup }`, and nothing
+  else; there is no V1 `server()`.
+- **No longer a provider.** The plugin registers nothing; it edits the built-in
+  provider's models with a model transform and hooks its requests:
+  - auto-load at the capped `contextLength` (and reload of an undersized
+    resident instance) runs in the `model.request` session hook, awaited before
+    the completion goes out;
+  - idle `ttl` rides each model's request-body overlay;
+  - tools are forced on (the built-in gates them on `trained_for_tool_use`);
+  - graduated reasoning models get low/medium/high effort variants, on/off-only
+    ones get none, and `reasoning_effort: "max"` is demoted to `"xhigh"` in the
+    `http.request` hook.
+- **Config moved.** `plugin` → `plugins`, with options in the object form
+  (`{ "package": "@hellogravel/opencode-lms", "options": { ... } }`). LM
+  Studio's address and key are the built-in provider's
+  `providers.lmstudio.settings.baseURL` / `apiKey`, and request timeouts are its
+  `timeout` / `chunkTimeout` settings. Plugin options are now `contextLength`,
+  `models.<key>.contextLength`, `ttl`, `disableAutoLoad`, and `loadTimeout`.
+- **Advertised window follows the load cap.** With auto-load on, each model's
+  `limit.context` is the window it will be loaded with (or a larger resident
+  one), and `limit.output` is `min(⌊context/4⌋, 8192)`; the built-in alone would
+  advertise the full `max_context_length` with a 32k output reserve.
+
+### Fixed
+
+- **Undersized resident instances are now actually reloaded.** 0.4.x returned
+  from `chat.params` whenever any instance was resident, so the reload path in
+  `ensureModelLoaded` was only reachable from tests. Auto-load now always runs
+  it.
+
+### Removed
+
+- Model discovery and mapping, health checks and port auto-detection, the
+  self-heal re-discovery, provider registration (and its config-entry
+  fallback), the v0 and OpenAI-compat listing fallbacks, and the tool-use
+  discovery diagnostic — all covered by the built-in provider.
+- `autoDownload` / `downloadTimeout`, per-model metadata overrides (use
+  `providers.lmstudio.models` in OpenCode's config), and the `name`,
+  `baseURL`, `apiKey`, `autoDetect`, `timeout`, and `chunkTimeout` plugin
+  options.
+- `test-live.mjs` (it drove the removed discovery modules).
+
+## [0.4.0] - 2026-07-10
 
 ### Fixed
 

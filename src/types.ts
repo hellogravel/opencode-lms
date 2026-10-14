@@ -1,14 +1,4 @@
-// Core types for LM Studio API and plugin internals
-
-import type { ProviderHook } from "@opencode-ai/plugin";
-
-// ─── OpenCode v2 model shape ───
-//
-// The `provider.models` hook returns OpenCode's strict `Model` (a.k.a.
-// ModelV2) objects. Rather than depend on `@opencode-ai/sdk/v2` directly,
-// derive the type from the plugin's own ProviderHook signature so it always
-// tracks whatever @opencode-ai/plugin version is installed.
-export type ModelV2 = Awaited<ReturnType<NonNullable<ProviderHook["models"]>>>[string];
+// Core types for the LM Studio REST API and plugin options
 
 // ─── LM Studio REST v1 API types ───
 
@@ -66,51 +56,7 @@ export interface LMSModelUnloadResponse {
   instance_id: string;
 }
 
-export interface LMSDownloadRequest {
-  model: string;
-}
-
-export interface LMSDownloadStatusResponse {
-  job_id: string;
-  status: "pending" | "downloading" | "completed" | "failed";
-  progress?: number;
-  error?: string;
-}
-
-// ─── LM Studio REST v0 types ───
-
-export interface LMSV0Model {
-  id: string;
-  object: string;
-  type: "llm" | "vlm" | "embeddings";
-  publisher: string;
-  arch: string;
-  compatibility_type: "gguf" | "mlx";
-  quantization: string;
-  state: "loaded" | "not-loaded";
-  max_context_length: number;
-}
-
-export interface LMSV0ModelsResponse {
-  object: string;
-  data: LMSV0Model[];
-}
-
-// ─── OpenAI-compatible types ───
-
-export interface LMSOpenAIModel {
-  id: string;
-  object: "model";
-  created: number;
-  owned_by: string;
-}
-
-export interface LMSOpenAIModelsResponse {
-  object: string;
-  data: LMSOpenAIModel[];
-}
-
-// ─── Streaming event types ───
+// ─── Streaming event types (/api/v1/chat, used only to observe a load) ───
 
 export type LMSStreamEventType =
   | "chat.start"
@@ -137,11 +83,6 @@ export interface LMSStreamEvent {
   type: LMSStreamEventType;
 }
 
-export interface LMSChatStartEvent extends LMSStreamEvent {
-  type: "chat.start";
-  model_instance_id: string;
-}
-
 export interface LMSModelLoadStartEvent extends LMSStreamEvent {
   type: "model_load.start";
   model_instance_id: string;
@@ -159,58 +100,6 @@ export interface LMSModelLoadEndEvent extends LMSStreamEvent {
   load_time_seconds: number;
 }
 
-export interface LMSReasoningStartEvent extends LMSStreamEvent {
-  type: "reasoning.start";
-}
-
-export interface LMSReasoningDeltaEvent extends LMSStreamEvent {
-  type: "reasoning.delta";
-  content: string;
-}
-
-export interface LMSReasoningEndEvent extends LMSStreamEvent {
-  type: "reasoning.end";
-}
-
-export interface LMSMessageStartEvent extends LMSStreamEvent {
-  type: "message.start";
-}
-
-export interface LMSMessageDeltaEvent extends LMSStreamEvent {
-  type: "message.delta";
-  content: string;
-}
-
-export interface LMSMessageEndEvent extends LMSStreamEvent {
-  type: "message.end";
-}
-
-export interface LMSChatEndEvent extends LMSStreamEvent {
-  type: "chat.end";
-  result: {
-    model_instance_id: string;
-    output: Array<
-      | { type: "reasoning"; content: string }
-      | {
-          type: "tool_call";
-          tool: string;
-          arguments: Record<string, unknown>;
-          output: string;
-          provider_info?: Record<string, unknown>;
-        }
-      | { type: "message"; content: string }
-    >;
-    stats: {
-      input_tokens: number;
-      total_output_tokens: number;
-      reasoning_output_tokens: number;
-      tokens_per_second: number;
-      time_to_first_token_seconds: number;
-    };
-    response_id?: string;
-  };
-}
-
 export interface LMSErrorEvent extends LMSStreamEvent {
   type: "error";
   error: {
@@ -221,201 +110,38 @@ export interface LMSErrorEvent extends LMSStreamEvent {
   };
 }
 
-export interface LMSToolCallStartEvent extends LMSStreamEvent {
-  type: "tool_call.start";
-  tool: string;
-  provider_info?: Record<string, unknown>;
-}
+// ─── Plugin options ───
 
-export interface LMSToolCallArgumentsEvent extends LMSStreamEvent {
-  type: "tool_call.arguments";
-  tool: string;
-  arguments: Record<string, unknown>;
-  provider_info?: Record<string, unknown>;
-}
-
-export interface LMSToolCallSuccessEvent extends LMSStreamEvent {
-  type: "tool_call.success";
-  tool: string;
-  arguments: Record<string, unknown>;
-  output: string;
-  provider_info?: Record<string, unknown>;
-}
-
-export interface LMSToolCallFailureEvent extends LMSStreamEvent {
-  type: "tool_call.failure";
-  reason: string;
-  metadata: {
-    type: "invalid_name" | "invalid_arguments";
-    tool_name: string;
-    arguments?: Record<string, unknown>;
-    provider_info?: Record<string, unknown>;
-  };
-}
-
-// ─── Plugin config types ───
-
-export interface LMSProviderConfig {
-  name?: string;
-  baseURL?: string;
-  apiKey?: string;
-  autoDetect?: boolean;
-  models?: Record<string, LMSModelOverride>;
-  disableAutoLoad?: boolean;
-  /**
-   * When a referenced model isn't on disk, automatically download it before
-   * loading. OFF by default — a typo in a model id could trigger a 30+ GB
-   * download. Enable explicitly when you want this convenience.
-   */
-  autoDownload?: boolean;
-  /** Override timeout for load/unload operations in ms. Default 600000 (10 min). */
-  loadTimeout?: number;
-  /** Override timeout for download operations in ms. Default 1800000 (30 min). */
-  downloadTimeout?: number;
-  /**
-   * Overall request timeout for chat completions in ms, passed to the
-   * underlying provider. Default 600000 (10 min).
-   */
-  timeout?: number;
-  /**
-   * Inter-chunk (time-to-next-token) timeout for streamed chat completions in
-   * ms, passed to the underlying provider. Default 120000 (2 min).
-   *
-   * NOTE for sliding-window-attention models (e.g. Gemma): llama.cpp can't
-   * reuse the prompt cache for SWA, so every turn reprocesses the full prompt
-   * from scratch. No SSE chunks are emitted during that prompt-processing
-   * phase, so a large prompt can exceed this timeout before the first token,
-   * causing the request to abort and retry in a loop. Raise this (or match it
-   * to `timeout`) if you see prompt processing restart from 0% repeatedly.
-   */
-  chunkTimeout?: number;
+/**
+ * Options read from the plugin's config entry:
+ * `"plugins": [{ "package": "@hellogravel/opencode-lms", "options": { ... } }]`.
+ * Where LM Studio lives (baseURL, apiKey) is NOT here: that is the built-in
+ * provider's `providers.lmstudio.settings`, and the plugin reads it from there.
+ */
+export interface LMSPluginOptions {
   /**
    * Global default cap for the context window a model is *loaded* with (the
    * VRAM knob). LM Studio would otherwise load at each model's
    * `max_context_length`, which can dominate VRAM on large-window models.
    * Default 32768 — an OpenCode agent session opens at well over 8k tokens,
    * so smaller defaults reject the first request. A model whose max is below
-   * this loads at its max; a per-model `contextLength` override adjusts per
-   * model. A resident instance with a smaller window than the resolved value
-   * is unloaded and reloaded at it on first use; the advertised
-   * `limit.context` follows this value so OpenCode budgets against the real
-   * window.
+   * this loads at its max; `models[<key>].contextLength` adjusts per model. A
+   * resident instance with a smaller window than the resolved value is
+   * unloaded and reloaded at it on first use; the advertised `limit.context`
+   * follows this value so OpenCode budgets against the real window.
    */
   contextLength?: number;
+  /** Per-model load-time overrides, keyed by LM Studio model key. */
+  models?: Record<string, { contextLength?: number }>;
   /**
    * Idle time-to-live in seconds applied to each chat completion. LM Studio
    * resets the countdown on every request, so a model stays resident under
-   * active use and auto-evicts only after `ttl` idle seconds — freeing VRAM
-   * without a client-side unload loop. Sent on the OpenAI-compat completion
-   * path (LM Studio's REST load/chat endpoints reject a `ttl` key). Default
-   * 3600 (1h). `0` = resident (no `ttl` sent).
+   * active use and auto-evicts only after `ttl` idle seconds. Default 3600
+   * (1h). `0` = resident (no `ttl` sent).
    */
   ttl?: number;
-}
-
-export interface LMSModelOverride {
-  id: string;
-  name: string;
-  family?: string;
-  reasoning?: boolean;
-  tool_call?: boolean;
-  modalities?: {
-    input: Array<"text" | "image" | "audio" | "video" | "pdf">;
-    output: Array<"text" | "audio" | "image" | "video" | "pdf">;
-  };
-  limit?: {
-    context: number;
-    input?: number;
-    output: number;
-  };
-  variants?: Record<string, { disabled?: boolean }>;
-  options?: Record<string, unknown>;
-  /**
-   * Per-model load-time context window (the VRAM knob). Overrides the global
-   * `contextLength` cap for this model only; still clamped to the model's
-   * `max_context_length`. Distinct from `limit.context`, which is UI metadata
-   * and never sent to LM Studio.
-   */
-  contextLength?: number;
-}
-
-// ─── Internal state types ───
-
-export interface ModelCacheEntry {
-  models: LMSModelInfo[];
-  timestamp: number;
-  ttl: number;
-}
-
-export interface HealthCheckResult {
-  healthy: boolean;
-  baseURL: string;
-  apiVersion: "v1" | "v0" | "openai";
-  latency: number;
-}
-
-// ─── Capability mapping types ───
-
-export interface MappedModelConfig {
-  id: string;
-  name: string;
-  family?: string;
-  /**
-   * Whether this model accepts a temperature parameter. Lets OpenCode's UI
-   * surface temperature controls. True for LLMs, false for embedding models.
-   */
-  temperature?: boolean;
-  reasoning?: boolean;
-  /**
-   * Whether the model accepts file/image attachments alongside the message.
-   * True for vision-capable LLMs. Distinct from `modalities.input.image` —
-   * `attachment` gates the UI "attach a file" affordance.
-   */
-  attachment?: boolean;
-  tool_call?: boolean;
-  /**
-   * Tells OpenCode to interleave a structured reasoning content field from
-   * the upstream's streaming response. Set to `{ field: "reasoning_content" }`
-   * for reasoning-capable LMS models — without this, the reasoning trace
-   * arrives on the wire (from /v1/chat/completions delta.reasoning_content)
-   * but OpenCode's renderer skips it.
-   *
-   * OpenCode's config schema accepts `true | {field}` or omitted — explicit
-   * `false` is rejected. Leave undefined for non-reasoning models.
-   */
-  interleaved?: true | { field: "reasoning_content" | "reasoning_details" };
-  /**
-   * Per-token cost. LMS models are local, so always zero. Setting this
-   * explicitly suppresses noise in OpenCode's cost display.
-   */
-  cost?: {
-    input?: number;
-    output?: number;
-    cache_read?: number;
-    cache_write?: number;
-  };
-  modalities?: {
-    input: Array<"text" | "image" | "audio" | "video" | "pdf">;
-    output: Array<"text" | "audio" | "image" | "video" | "pdf" | "embedding">;
-  };
-  limit?: {
-    context: number;
-    input?: number;
-    output?: number;
-  };
-  /**
-   * Keyed by variant id. Each value carries per-variant flags. `disabled: true`
-   * tells OpenCode to filter the variant out at parse time. Shape matches
-   * OpenCode's variant schema — a `Record<string, Record<string, any>>` map of
-   * variant id to an open bag of per-variant flags.
-   */
-  variants?: Record<string, { disabled?: boolean }>;
-  isLoaded: boolean;
-  loadedInstance?: {
-    id: string;
-    context_length: number;
-  };
-  quantization?: string;
-  format?: string;
-  size_bytes?: number;
+  /** Skip auto-loading; LM Studio JIT-loads at its own defaults instead. */
+  disableAutoLoad?: boolean;
+  /** Timeout for load/unload operations in ms. Default 600000 (10 min). */
+  loadTimeout?: number;
 }

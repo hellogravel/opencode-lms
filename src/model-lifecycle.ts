@@ -1,5 +1,5 @@
 import type { LMSClient } from "./api-client.js";
-import type { LMSModelInfo, LMSStreamEvent, LMSDownloadStatusResponse } from "./types.js";
+import type { LMSModelInfo, LMSStreamEvent } from "./types.js";
 import { parseSSEStream } from "./streaming.js";
 
 const DEFAULT_TTL = 15000; // 15 seconds
@@ -14,13 +14,13 @@ const MAX_CACHE_SIZE = 50;
 const DEFAULT_CONTEXT_LENGTH = 32768;
 
 /**
- * Load-time knobs threaded from provider config into the lifecycle — the single
+ * Load-time knobs threaded from plugin options into the lifecycle — the single
  * seam that carries all VRAM policy to the model-load sites. Kept distinct from
  * the UI-facing `limit.context`, which is never sent to LMS.
  *
  * NB: idle TTL is NOT threaded here. LM Studio's REST load/chat endpoints reject
  * a `ttl` key; TTL is applied per-completion on the OpenAI-compat path (see
- * applyCompletionTtl in ttl.ts), which is where OpenCode's inference goes.
+ * applyTtl in model-policy.ts), which is where OpenCode's inference goes.
  */
 export interface ModelLoadPolicy {
   /** Global default cap for the load-time context window. Default 32768. */
@@ -32,12 +32,12 @@ export interface ModelLoadPolicy {
 /**
  * Resolve the load-time context window for a model: a per-model override
  * wins, else the global cap (default 32768), always clamped to the model's
- * own max_context_length. This is the VRAM knob; model discovery also uses it
+ * own max_context_length. This is the VRAM knob; the model policy also uses it
  * so the advertised `limit.context` matches what requests will actually get.
  */
 export function resolveContextLength(
   policy: ModelLoadPolicy,
-  modelInfo: LMSModelInfo,
+  modelInfo: Pick<LMSModelInfo, "key" | "max_context_length">,
 ): number {
   const desired =
     policy.perModel?.[modelInfo.key]?.contextLength ??
@@ -112,31 +112,16 @@ export class ModelLifecycle {
   private policy: ModelLoadPolicy;
   // Single-flight guard for ensureModelLoaded, keyed by model key. Concurrent
   // sessions (e.g. a kanban board dispatching several headless agents at once)
-  // all hit chat.params for the same cold model inside the status cache's TTL,
-  // so each would pass the loaded-check and load its own instance — and the
-  // undersized-reload path would interleave unload/load. Joiners await the
-  // first caller's load instead.
+  // all hit the model.request hook for the same cold model inside the status
+  // cache's TTL, so each would pass the loaded-check and load its own instance
+  // — and the undersized-reload path would interleave unload/load. Joiners
+  // await the first caller's load instead.
   private inflightLoads = new Map<string, Promise<void>>();
 
   constructor(client: LMSClient, policy: ModelLoadPolicy = {}) {
     this.client = client;
     this.cache = new ModelStatusCache();
     this.policy = policy;
-  }
-
-  /**
-   * Get loaded models, using cache when available.
-   */
-  /**
-   * Get loaded model IDs, using cache when available.
-   */
-  async getLoadedModels(baseURL: string): Promise<string[]> {
-    const models = await this.cache.getModels(baseURL, () =>
-      this.client.getModels(),
-    );
-    return models
-      .filter((m) => m.loaded_instances.length > 0)
-      .flatMap((m) => m.loaded_instances.map((inst) => inst.id));
   }
 
   /**
@@ -209,17 +194,6 @@ export class ModelLifecycle {
       }
     }
 
-    // Embedding models can't be loaded via /api/v1/chat — that endpoint is
-    // LLM-only and returns model_not_found. Use the synchronous load endpoint.
-    if (modelInfo.type === "embedding") {
-      await this.client.loadModel(modelInfo.key, {
-        context_length: ctx,
-        echo_load_config: true,
-      });
-      this.cache.invalidate(this.client.baseURLWithTrailingSlash);
-      return;
-    }
-
     const controller = new AbortController();
     let streamLoaded = false;
     try {
@@ -265,81 +239,5 @@ export class ModelLifecycle {
     }
 
     this.cache.invalidate(this.client.baseURLWithTrailingSlash);
-  }
-
-  /**
-   * Unload a specific model instance. Intentionally un-wired: idle eviction is
-   * delegated to the per-completion `ttl` sent on the OpenAI-compat path (see
-   * applyCompletionTtl in ttl.ts / LMSProviderConfig.ttl), so the plugin never
-   * drives an unload loop. Kept as an explicit method for callers that want to
-   * force-evict.
-   */
-  async unloadModel(instanceId: string): Promise<void> {
-    await this.client.unloadModel(instanceId);
-    // Invalidate cache
-    this.cache.invalidate(this.client.baseURLWithTrailingSlash);
-  }
-
-  /**
-   * Start downloading a model. Returns a job_id for tracking.
-   */
-  async downloadModel(modelKey: string): Promise<{ job_id: string }> {
-    return this.client.downloadModel(modelKey);
-  }
-
-  /**
-   * Start a download and poll the status endpoint until it completes, fails,
-   * or the deadline passes. The download API isn't SSE — we poll because
-   * that's all LM Studio exposes.
-   *
-   * @param modelKey  the model id LM Studio knows it as
-   * @param onProgress  called with each status snapshot (use to log progress)
-   * @param options.pollIntervalMs  default 2000 — how often to hit the status endpoint
-   * @param options.timeoutMs  default 1800000 (30 min) — hard upper bound
-   */
-  async downloadModelAndWait(
-    modelKey: string,
-    onProgress?: (status: LMSDownloadStatusResponse) => void,
-    options: { pollIntervalMs?: number; timeoutMs?: number } = {},
-  ): Promise<void> {
-    const pollIntervalMs = options.pollIntervalMs ?? 2_000;
-    const timeoutMs = options.timeoutMs ?? 30 * 60 * 1_000;
-
-    const { job_id } = await this.client.downloadModel(modelKey);
-    if (!job_id) {
-      throw new Error("Download endpoint returned no job_id");
-    }
-
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const status = await this.client.getDownloadStatus(job_id);
-      if (onProgress) onProgress(status);
-
-      if (status.status === "completed") {
-        this.cache.invalidate(this.client.baseURLWithTrailingSlash);
-        return;
-      }
-      if (status.status === "failed") {
-        throw new Error(`Download failed: ${status.error ?? "(no detail)"}`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-    }
-
-    throw new Error(`Download of ${modelKey} timed out after ${timeoutMs}ms`);
-  }
-
-  /**
-   * Check if a specific model is currently loaded.
-   */
-  async isModelLoaded(baseURL: string, modelKey: string): Promise<boolean> {
-    const loadedIds = await this.getLoadedModels(baseURL);
-    return loadedIds.includes(modelKey);
-  }
-
-  /**
-   * Get all available models on disk (downloaded).
-   */
-  async getAvailableModels(baseURL: string): Promise<LMSModelInfo[]> {
-    return this.getAllModels(baseURL);
   }
 }

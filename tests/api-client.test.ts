@@ -31,64 +31,6 @@ function installFetchMock(responses: MockResponse[]): { calls: FetchCall[] } {
   return { calls };
 }
 
-describe("LMSClient.checkHealth", () => {
-  beforeEach(() => vi.restoreAllMocks());
-  afterEach(() => vi.unstubAllGlobals());
-
-  it("returns healthy/v1 when /api/v1/models responds 200", async () => {
-    installFetchMock([
-      { url: /\/api\/v1\/models$/, ok: true, status: 200, body: { models: [] } },
-    ]);
-    const client = new LMSClient({ baseURL: "http://localhost:1234" });
-    const result = await client.checkHealth();
-    expect(result.healthy).toBe(true);
-    expect(result.apiVersion).toBe("v1");
-  });
-
-  it("falls back to v0 when v1 errors but v0 responds", async () => {
-    installFetchMock([
-      { url: /\/api\/v1\/models$/, ok: false, status: 404, body: {} },
-      { url: /\/api\/v0\/models$/, ok: true, status: 200, body: { data: [] } },
-    ]);
-    const client = new LMSClient({ baseURL: "http://localhost:1234" });
-    const result = await client.checkHealth();
-    expect(result.healthy).toBe(true);
-    expect(result.apiVersion).toBe("v0");
-  });
-
-  it("falls all the way back to OpenAI-compatible /v1/models", async () => {
-    installFetchMock([
-      { url: /\/api\/v1\/models$/, ok: false, status: 404, body: {} },
-      { url: /\/api\/v0\/models$/, ok: false, status: 404, body: {} },
-      { url: /\/v1\/models$/, ok: true, status: 200, body: { data: [] } },
-    ]);
-    const client = new LMSClient({ baseURL: "http://localhost:1234" });
-    const result = await client.checkHealth();
-    expect(result.healthy).toBe(true);
-    expect(result.apiVersion).toBe("openai");
-  });
-
-  it("returns healthy:false when nothing answers", async () => {
-    installFetchMock([
-      { url: /\/api\/v1\/models$/, ok: false, status: 401, body: {} },
-      { url: /\/api\/v0\/models$/, ok: false, status: 401, body: {} },
-      { url: /\/v1\/models$/, ok: false, status: 401, body: {} },
-    ]);
-    const client = new LMSClient({ baseURL: "http://localhost:1234" });
-    const result = await client.checkHealth();
-    expect(result.healthy).toBe(false);
-  });
-
-  it("sends Authorization: Bearer <apiKey> when apiKey is set", async () => {
-    const { calls } = installFetchMock([
-      { url: /\/api\/v1\/models$/, ok: true, status: 200, body: { models: [] } },
-    ]);
-    const client = new LMSClient({ baseURL: "http://localhost:1234", apiKey: "sk-test" });
-    await client.checkHealth();
-    expect((calls[0].init.headers as Record<string, string>).Authorization).toBe("Bearer sk-test");
-  });
-});
-
 describe("LMSClient.getModels", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.unstubAllGlobals());
@@ -105,77 +47,21 @@ describe("LMSClient.getModels", () => {
     expect(result).toEqual(v1Models);
   });
 
-  it("converts v0 'embeddings' type to 'embedding' (the fix surfaced by live testing)", async () => {
+  it("throws when /api/v1/models fails, so callers keep their last catalog", async () => {
     installFetchMock([
-      { url: /\/api\/v1\/models$/, ok: false, status: 404, body: {} },
-      {
-        url: /\/api\/v0\/models$/,
-        ok: true,
-        status: 200,
-        body: {
-          data: [
-            {
-              id: "embed-1",
-              type: "embeddings",
-              publisher: "p",
-              arch: "a",
-              compatibility_type: "gguf",
-              quantization: "Q4",
-              state: "not-loaded",
-              max_context_length: 512,
-            },
-            {
-              id: "llm-1",
-              type: "llm",
-              publisher: "p",
-              arch: "a",
-              compatibility_type: "gguf",
-              quantization: "Q4",
-              state: "not-loaded",
-              max_context_length: 4096,
-            },
-            {
-              id: "vlm-1",
-              type: "vlm",
-              publisher: "p",
-              arch: "a",
-              compatibility_type: "gguf",
-              quantization: "Q4",
-              state: "not-loaded",
-              max_context_length: 4096,
-            },
-          ],
-        },
-      },
+      { url: /\/api\/v1\/models$/, ok: false, status: 401, text: "unauthorized" },
     ]);
     const client = new LMSClient({ baseURL: "http://localhost:1234" });
-    const result = await client.getModels();
-    expect(result.find((m) => m.key === "embed-1")?.type).toBe("embedding");
-    expect(result.find((m) => m.key === "llm-1")?.type).toBe("llm");
-    expect(result.find((m) => m.key === "vlm-1")?.type).toBe("llm");
-    expect(result.find((m) => m.key === "vlm-1")?.capabilities?.vision).toBe(true);
+    await expect(client.getModels()).rejects.toThrow(/401/);
   });
 
-  it("uses categorizeModel heuristic for the OpenAI-compat fallback", async () => {
-    installFetchMock([
-      { url: /\/api\/v1\/models$/, ok: false, status: 404, body: {} },
-      { url: /\/api\/v0\/models$/, ok: false, status: 404, body: {} },
-      {
-        url: /\/v1\/models$/,
-        ok: true,
-        status: 200,
-        body: {
-          data: [
-            { id: "text-embedding-nomic", object: "model", created: 0, owned_by: "p" },
-            { id: "qwen-7b", object: "model", created: 0, owned_by: "p" },
-          ],
-        },
-      },
+  it("sends the bearer token when an apiKey is set", async () => {
+    const { calls } = installFetchMock([
+      { url: /\/api\/v1\/models$/, ok: true, status: 200, body: { models: [] } },
     ]);
-    const client = new LMSClient({ baseURL: "http://localhost:1234" });
-    const result = await client.getModels();
-    expect(result.find((m) => m.key === "text-embedding-nomic")?.type).toBe("embedding");
-    expect(result.find((m) => m.key === "qwen-7b")?.type).toBe("llm");
+    const client = new LMSClient({ baseURL: "http://localhost:1234", apiKey: "sk-lm-x" });
+    await client.getModels();
+    expect((calls[0].init.headers as Record<string, string>).Authorization).toBe("Bearer sk-lm-x");
   });
 });
 
@@ -253,7 +139,7 @@ describe("LMSClient.streamChat", () => {
   });
 });
 
-describe("LMSClient.loadModel / unloadModel / downloadModel", () => {
+describe("LMSClient.loadModel / unloadModel", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.unstubAllGlobals());
 
@@ -301,19 +187,5 @@ describe("LMSClient.loadModel / unloadModel / downloadModel", () => {
 
     const body = JSON.parse(calls[0].init.body as string);
     expect(body).toEqual({ instance_id: "inst-1" });
-  });
-
-  it("downloadModel returns the job_id from the server", async () => {
-    installFetchMock([
-      {
-        url: /\/api\/v1\/models\/download$/,
-        ok: true,
-        status: 200,
-        body: { job_id: "job-abc" },
-      },
-    ]);
-    const client = new LMSClient({ baseURL: "http://localhost:1234" });
-    const result = await client.downloadModel("model-x");
-    expect(result.job_id).toBe("job-abc");
   });
 });

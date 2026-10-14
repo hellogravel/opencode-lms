@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ModelLifecycle, ModelStatusCache } from "../src/model-lifecycle.js";
 import type { LMSClient } from "../src/api-client.js";
-import type { LMSDownloadStatusResponse, LMSModelInfo } from "../src/types.js";
+import type { LMSModelInfo } from "../src/types.js";
 
 const fakeModel = (key: string, overrides: Partial<LMSModelInfo> = {}): LMSModelInfo => ({
   type: "llm",
@@ -42,8 +42,6 @@ function makeStubClient(overrides: Partial<Record<keyof LMSClient, unknown>> = {
     loadModel: vi.fn(),
     unloadModel: vi.fn(),
     streamChat: vi.fn(),
-    downloadModel: vi.fn(),
-    getDownloadStatus: vi.fn(),
   };
   return Object.assign(base, overrides) as unknown as LMSClient;
 }
@@ -122,77 +120,6 @@ describe("ModelStatusCache", () => {
     const r2 = await cache.getModels("http://x", fetch);
 
     expect(r2).toHaveLength(1);
-  });
-});
-
-describe("ModelLifecycle.downloadModelAndWait", () => {
-  it("resolves when status transitions to 'completed', invalidates the cache", async () => {
-    const statuses: LMSDownloadStatusResponse[] = [
-      { job_id: "j1", status: "pending" },
-      { job_id: "j1", status: "downloading", progress: 0.5 },
-      { job_id: "j1", status: "completed", progress: 1 },
-    ];
-    const client = makeStubClient({
-      downloadModel: vi.fn().mockResolvedValue({ job_id: "j1" }),
-      getDownloadStatus: vi.fn().mockImplementation(async () => statuses.shift()!),
-    });
-    const lifecycle = new ModelLifecycle(client);
-    const progress: LMSDownloadStatusResponse[] = [];
-
-    await lifecycle.downloadModelAndWait("test/model", (s) => progress.push(s), {
-      pollIntervalMs: 0, // no real delay between polls
-    });
-
-    expect(progress.map((p) => p.status)).toEqual(["pending", "downloading", "completed"]);
-    expect(client.downloadModel).toHaveBeenCalledWith("test/model");
-  });
-
-  it("rejects when status is 'failed', surfacing the error detail", async () => {
-    const client = makeStubClient({
-      downloadModel: vi.fn().mockResolvedValue({ job_id: "j1" }),
-      getDownloadStatus: vi.fn().mockResolvedValue({
-        job_id: "j1",
-        status: "failed",
-        error: "out of disk space",
-      }),
-    });
-    const lifecycle = new ModelLifecycle(client);
-
-    await expect(
-      lifecycle.downloadModelAndWait("test/model", undefined, { pollIntervalMs: 0 }),
-    ).rejects.toThrow(/out of disk space/);
-  });
-
-  it("rejects when the server returns no job_id", async () => {
-    const client = makeStubClient({
-      downloadModel: vi.fn().mockResolvedValue({ job_id: "" }),
-    });
-    const lifecycle = new ModelLifecycle(client);
-
-    await expect(
-      lifecycle.downloadModelAndWait("test/model"),
-    ).rejects.toThrow(/no job_id/);
-  });
-
-  it("times out when the download never completes", async () => {
-    const client = makeStubClient({
-      downloadModel: vi.fn().mockResolvedValue({ job_id: "j1" }),
-      // Stuck in "downloading" forever
-      getDownloadStatus: vi.fn().mockResolvedValue({
-        job_id: "j1",
-        status: "downloading",
-        progress: 0.1,
-      }),
-    });
-    const lifecycle = new ModelLifecycle(client);
-
-    // Tight loop so this returns fast; timeoutMs is checked against Date.now().
-    await expect(
-      lifecycle.downloadModelAndWait("test/model", undefined, {
-        pollIntervalMs: 0,
-        timeoutMs: 1, // expires basically immediately
-      }),
-    ).rejects.toThrow(/timed out/);
   });
 });
 
@@ -314,23 +241,6 @@ describe("ModelLifecycle.ensureModelLoaded", () => {
     expect(client.loadModel).not.toHaveBeenCalled();
   });
 
-  it("uses the synchronous load endpoint for embedding models, skipping /api/v1/chat", async () => {
-    const embed = fakeModel("embed-1", { type: "embedding", max_context_length: 512 });
-    const client = makeStubClient({
-      getModels: vi.fn().mockResolvedValue([embed]),
-      loadModel: vi.fn().mockResolvedValue({ instance_id: "inst-x" }),
-      streamChat: vi.fn(),
-    });
-    const lifecycle = new ModelLifecycle(client);
-
-    await lifecycle.ensureModelLoaded("http://stub", embed);
-
-    expect(client.streamChat).not.toHaveBeenCalled();
-    expect(client.loadModel).toHaveBeenCalledWith("embed-1", expect.objectContaining({
-      context_length: 512,
-    }));
-  });
-
   it("streams events from /api/v1/chat and forwards them to onEvent", async () => {
     const llm = fakeModel("llm-1");
     const client = makeStubClient({
@@ -449,20 +359,6 @@ describe("ModelLifecycle context-length policy", () => {
   it("a model whose max is below the 32768 default loads at its max", async () => {
     const small = fakeModel("small", { max_context_length: 4096 });
     expect(await loadAndCaptureStreamCtx(small)).toBe(4096);
-  });
-
-  it("applies the resolved context to the embedding synchronous-load path too", async () => {
-    const embed = fakeModel("embed", { type: "embedding", max_context_length: 131072 });
-    const client = makeStubClient({
-      getModels: vi.fn().mockResolvedValue([embed]),
-      loadModel: vi.fn().mockResolvedValue({ instance_id: "inst-x" }),
-      streamChat: vi.fn(),
-    });
-    const lifecycle = new ModelLifecycle(client);
-    await lifecycle.ensureModelLoaded("http://stub", embed);
-    expect(client.loadModel).toHaveBeenCalledWith("embed", expect.objectContaining({
-      context_length: 32768,
-    }));
   });
 
   it("applies the resolved context to the synchronous-load fallback", async () => {
